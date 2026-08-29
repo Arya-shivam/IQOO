@@ -69,6 +69,8 @@ def main() -> None:
 
     ask_parser = sub.add_parser("ask", help="Ask the phone model a question")
     ask_parser.add_argument("prompt", nargs="+")
+    sub.add_parser("models", help="List models exposed by the phone server")
+
 
     sub.add_parser("status", help="Show Git status")
     pull = sub.add_parser("pull", help="Pull Git changes after approval")
@@ -85,6 +87,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "ask":
         print(ask(" ".join(args.prompt)))
+    elif args.command == "models":
+        print(json.dumps(api("/models"), indent=2))
     elif args.command == "status":
         print(run("git", "status", "--short"), end="")
     elif args.command == "pull":
