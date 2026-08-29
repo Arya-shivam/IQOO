@@ -181,6 +181,7 @@ class MainActivity : ComponentActivity() {
         var downloadedModelIds by remember { mutableStateOf<Set<String>>(emptySet()) }
         var selectedComputeUnit by remember { mutableStateOf(modelRepository.selectedComputeUnit()) }
         var pendingComputeUnit by remember { mutableStateOf(selectedComputeUnit) }
+        var modelReady by remember { mutableStateOf(false) }
         var chatState by remember { mutableStateOf("Ready · context stays on this device") }
         var chatBusy by remember { mutableStateOf(false) }
         var streamingResponse by remember { mutableStateOf("") }
@@ -201,12 +202,16 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) {
             modelRepository.selected()?.let { saved ->
                 runCatching { modelRepository.paths(saved) }.getOrNull()?.let { paths ->
-                    llm.useManagedModel(ManagedModel(paths.model_name, paths.model_path, paths.tokenizer_path, paths.runtime_id.ifEmpty { "llama_cpp" }, selectedComputeUnit))
+                    val runtimeId = paths.runtime_id.ifEmpty { "llama_cpp" }
+                    val computeUnit = if (runtimeId == "qairt") "npu" else selectedComputeUnit
+                    llm.useManagedModel(ManagedModel(paths.model_name, paths.model_path, paths.tokenizer_path, runtimeId, computeUnit))
                     selectedModel = saved.displayName
-                    modelState = "Loading · ${selectedComputeUnit.uppercase()} · local model"
+                    selectedComputeUnit = computeUnit
+                    modelState = "Loading · ${computeUnit.uppercase()} · local model"
                     val loadResult = withContext(Dispatchers.IO) { llm.preload() }
+                    modelReady = loadResult.isSuccess
                     modelState = loadResult.fold(
-                        { "Ready · ${selectedComputeUnit.uppercase()} · warmed up" },
+                        { "Ready · ${computeUnit.uppercase()} · warmed up" },
                         { "Model load failed · ${it.message ?: "try again"}" }
                     )
                 }
@@ -265,8 +270,10 @@ class MainActivity : ComponentActivity() {
                                     selectedComputeUnit = computeUnit
                                     selectedModel = model.displayName
                                     modelState = "Loading · ${computeUnit.uppercase()} · local model"
+                                    modelReady = false
                                     showModelPicker = false
                                     val loadResult = withContext(Dispatchers.IO) { llm.preload() }
+                                    modelReady = loadResult.isSuccess
                                     modelState = loadResult.fold(
                                         { "Ready · ${computeUnit.uppercase()} · warmed up" },
                                         { "Model load failed · ${it.message ?: "try again"}" }
@@ -345,7 +352,14 @@ class MainActivity : ComponentActivity() {
                         onLoadModel = { pendingComputeUnit = selectedComputeUnit; showModelPicker = true },
                         onRefreshUsage = { usageRefresh++ },
                         onSendChat = { message ->
-                            if (message.isNotBlank()) scope.launch {
+                            if (message.isNotBlank() && !modelReady) {
+                                chatState = if (selectedModel == null) {
+                                    showModelPicker = true
+                                    "Select and load a local model before chatting"
+                                } else {
+                                    "Model is not ready · ${modelState.removePrefix("Model load failed · ")}"
+                                }
+                            } else if (message.isNotBlank()) scope.launch {
                                 chatBusy = true
                                 streamingResponse = ""
                                 try {

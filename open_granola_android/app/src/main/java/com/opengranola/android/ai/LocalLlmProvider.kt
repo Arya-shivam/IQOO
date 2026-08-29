@@ -4,6 +4,7 @@ import android.content.Context
 import com.geniex.sdk.GenieXSdk
 import com.geniex.sdk.LlmWrapper
 import com.geniex.sdk.bean.ChatMessage
+import com.geniex.sdk.bean.ComputeUnitValue
 import com.geniex.sdk.bean.GenerationConfig
 import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
@@ -245,10 +246,10 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             })
         }
         initResult.await().getOrThrow()
-        val isQairt = managed?.runtimeId == "qairt"
-        val computeUnit = if (isQairt) null else managed?.computeUnit ?: "cpu"
+        val isQairt = managed?.runtimeId.equals("qairt", ignoreCase = true)
+        val computeUnit = if (isQairt) ComputeUnitValue.NPU.value else managed?.computeUnit ?: "cpu"
         val modelConfig = if (isQairt) {
-            ModelConfig()
+            ModelConfig(nCtx = 0, nGpuLayers = 0)
         } else {
             ModelConfig().apply {
                 nCtx = 2048
