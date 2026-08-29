@@ -61,7 +61,7 @@ class RecordingService : Service() {
     }
 
     private fun notification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("Open Granola is recording")
+        .setContentTitle("pa is recording")
         .setContentText("Recording is stored locally on this device")
         .setSmallIcon(android.R.drawable.ic_btn_speak_now)
         .setOngoing(true)

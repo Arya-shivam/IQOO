@@ -7,44 +7,56 @@ import android.content.Intent
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import org.json.JSONArray
-import org.json.JSONObject
+import com.opengranola.android.data.NotificationEntity
+import com.opengranola.android.data.OpenGranolaDatabase
+import com.opengranola.android.notifications.NotificationRedactor
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
-data class NotificationRecord(
-    val packageName: String,
-    val title: String,
-    val text: String,
-    val postedAt: Long,
-)
-
+/** Read-only notification context collector ported from the notifications-read app. */
 class NotificationReadService : NotificationListenerService() {
-    override fun onNotificationPosted(statusBarNotification: StatusBarNotification) {
-        record(statusBarNotification)
-    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    override fun onNotificationPosted(sbn: StatusBarNotification) = record(sbn)
+
+    // The listener can be enabled after notifications already exist. Backfill
+    // the active shade so the first assistant briefing is not empty.
     override fun onListenerConnected() {
-        getActiveNotifications()?.forEach { record(it) }
+        getActiveNotifications()?.forEach(::record)
     }
 
-    private fun record(statusBarNotification: StatusBarNotification) {
-        if (statusBarNotification.packageName == packageName) return
-
-        val extras = statusBarNotification.notification.extras
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
-        val text = (
+    private fun record(sbn: StatusBarNotification) {
+        if (sbn.packageName == packageName || sbn.isOngoing) return
+        val extras = sbn.notification.extras
+        val title = NotificationRedactor.clean(extras.getCharSequence(Notification.EXTRA_TITLE))
+        val body = NotificationRedactor.clean(
             extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
                 ?: extras.getCharSequence(Notification.EXTRA_TEXT)
-            )?.toString().orEmpty()
-        if (title.isBlank() && text.isBlank()) return
-
-        NotificationStore(this).add(
-            NotificationRecord(
-                packageName = statusBarNotification.packageName,
-                title = title,
-                text = text,
-                postedAt = statusBarNotification.postTime,
-            )
         )
+        if (title.isBlank() && body.isBlank()) return
+        val appLabel = runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
+        }.getOrDefault(sbn.packageName)
+        scope.launch {
+            OpenGranolaDatabase.get(applicationContext).notificationDao().save(
+                NotificationEntity(
+                    id = "${sbn.packageName}:${sbn.key}",
+                    packageName = sbn.packageName,
+                    appLabel = appLabel,
+                    title = title.ifBlank { appLabel },
+                    body = body,
+                    postedAt = sbn.postTime
+                )
+            )
+        }
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
     }
 
     companion object {
@@ -53,12 +65,11 @@ class NotificationReadService : NotificationListenerService() {
         fun isEnabled(context: Context): Boolean {
             val enabled = Settings.Secure.getString(
                 context.contentResolver,
-                ENABLED_LISTENERS,
+                ENABLED_LISTENERS
             ).orEmpty()
-            return enabled.split(':').mapNotNull { ComponentName.unflattenFromString(it) }.any {
-                it.packageName == context.packageName &&
-                    it.className == NotificationReadService::class.java.name
-            }
+            return enabled.split(':')
+                .mapNotNull(ComponentName::unflattenFromString)
+                .any { it.packageName == context.packageName && it.className == NotificationReadService::class.java.name }
         }
 
         fun openSettings(context: Context) {
@@ -67,50 +78,5 @@ class NotificationReadService : NotificationListenerService() {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         }
-    }
-}
-
-class NotificationStore(context: Context) {
-    private val preferences = context.applicationContext.getSharedPreferences(
-        "notification_context",
-        Context.MODE_PRIVATE,
-    )
-
-    @Synchronized
-    fun add(record: NotificationRecord) {
-        val current = runCatching { JSONArray(preferences.getString(KEY, "[]")) }
-            .getOrDefault(JSONArray())
-        val updated = JSONArray().apply { put(record.toJson()) }
-        // ponytail: retain the newest 100 records; add Room/search when notification context needs history.
-        for (index in 0 until minOf(current.length(), MAX_RECORDS - 1)) {
-            updated.put(current.getJSONObject(index))
-        }
-        preferences.edit().putString(KEY, updated.toString()).apply()
-    }
-
-    fun recent(limit: Int = MAX_RECORDS): List<NotificationRecord> {
-        val current = runCatching { JSONArray(preferences.getString(KEY, "[]")) }
-            .getOrDefault(JSONArray())
-        return (0 until minOf(current.length(), limit.coerceAtLeast(0))).map {
-            val item = current.getJSONObject(it)
-            NotificationRecord(
-                packageName = item.optString("packageName"),
-                title = item.optString("title"),
-                text = item.optString("text"),
-                postedAt = item.optLong("postedAt"),
-            )
-        }
-    }
-
-    private fun NotificationRecord.toJson() = JSONObject().apply {
-        put("packageName", packageName)
-        put("title", title)
-        put("text", text)
-        put("postedAt", postedAt)
-    }
-
-    companion object {
-        private const val KEY = "records"
-        private const val MAX_RECORDS = 100
     }
 }

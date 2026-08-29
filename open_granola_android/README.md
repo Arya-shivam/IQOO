@@ -1,4 +1,4 @@
-# Open Granola Android
+# pa Android
 
 An Android-first, local-first meeting notetaker. This is a separate project from
 the existing `geniex_chat_android` GenieX demo in this repository.

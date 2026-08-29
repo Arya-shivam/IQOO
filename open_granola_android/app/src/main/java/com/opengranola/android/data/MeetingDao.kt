@@ -11,9 +11,15 @@ interface MeetingDao {
     @Query("SELECT * FROM meetings ORDER BY startedAt DESC")
     fun observeAll(): Flow<List<MeetingEntity>>
 
+    @Query("SELECT * FROM meetings ORDER BY startedAt DESC LIMIT :limit")
+    suspend fun recent(limit: Int): List<MeetingEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun save(meeting: MeetingEntity): Long
 
     @Query("DELETE FROM meetings WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("UPDATE meetings SET notes = '' WHERE id = :id")
+    suspend fun clearSummary(id: String)
 }
