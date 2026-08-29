@@ -245,18 +245,23 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             })
         }
         initResult.await().getOrThrow()
-        val computeUnit = managed?.computeUnit ?: "cpu"
-        val modelConfig = ModelConfig().apply {
-            nCtx = 2048
-            nThreads = if (computeUnit == "cpu") 4 else 2
-            nThreadsBatch = if (computeUnit == "cpu") 4 else 2
-            nBatch = 256
-            nUBatch = 128
-            nSeqMax = 1
-            nGpuLayers = when (computeUnit) {
-                "npu" -> 999
-                "gpu" -> 999
-                else -> 0
+        val isQairt = managed?.runtimeId == "qairt"
+        val computeUnit = if (isQairt) null else managed?.computeUnit ?: "cpu"
+        val modelConfig = if (isQairt) {
+            ModelConfig()
+        } else {
+            ModelConfig().apply {
+                nCtx = 2048
+                nThreads = if (computeUnit == "cpu") 4 else 2
+                nThreadsBatch = if (computeUnit == "cpu") 4 else 2
+                nBatch = 256
+                nUBatch = 128
+                nSeqMax = 1
+                nGpuLayers = when (computeUnit) {
+                    "npu" -> 999
+                    "gpu" -> 999
+                    else -> 0
+                }
             }
         }
         val input = LlmCreateInput(

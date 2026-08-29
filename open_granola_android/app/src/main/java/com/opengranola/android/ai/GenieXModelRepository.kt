@@ -14,7 +14,10 @@ data class GenieXCatalogModel(
     val id: String,
     val displayName: String,
     val modelName: String,
-    val quant: String = "Q4_0"
+    val quant: String? = "Q4_0",
+    val hub: HubSource = HubSource.HUGGINGFACE,
+    val chipset: String? = null,
+    val runtimeId: String = "llama_cpp"
 )
 
 /** Text-model catalog verified against the GenieX Android demo. */
@@ -29,7 +32,16 @@ class GenieXModelRepository(context: Context) {
         GenieXCatalogModel("ministral-3b", "Ministral 3B · powerful", "unsloth/Ministral-3-3B-Instruct-2512-GGUF"),
         GenieXCatalogModel("phi-4-mini", "Phi-4 Mini · reasoning", "bartowski/microsoft_Phi-4-mini-instruct-GGUF"),
         GenieXCatalogModel("gemma-4-e4b", "Gemma 4 E4B · advanced", "google/gemma-4-E4B-it-qat-q4_0-gguf"),
-        GenieXCatalogModel("gpt-oss-20b", "GPT-OSS 20B · experimental", "unsloth/gpt-oss-20b-GGUF")
+        GenieXCatalogModel("gpt-oss-20b", "GPT-OSS 20B · experimental", "unsloth/gpt-oss-20b-GGUF"),
+        GenieXCatalogModel(
+            "qwen3-4b-instruct-2507",
+            "Qwen3 4B Instruct · SM8850 NPU",
+            "ai-hub-models/Qwen3-4B-Instruct-2507",
+            quant = null,
+            hub = HubSource.AUTO,
+            chipset = "SM8850",
+            runtimeId = "qairt"
+        )
     )
 
     suspend fun paths(model: GenieXCatalogModel) = ensureInitialized().let { ModelManagerWrapper.getPaths(model.modelName) }
@@ -53,7 +65,8 @@ class GenieXModelRepository(context: Context) {
                 ModelPullInput(
                     model_name = model.modelName,
                     precision = model.quant,
-                    hub = HubSource.HUGGINGFACE
+                    hub = model.hub,
+                    chipset = model.chipset
                 )
             ))
         }

@@ -259,15 +259,16 @@ class MainActivity : ComponentActivity() {
                                 if (paths == null) {
                                     modelDownloadState = "Download this model first"
                                 } else {
-                                    llm.useManagedModel(ManagedModel(paths.model_name, paths.model_path, paths.tokenizer_path, paths.runtime_id.ifEmpty { "llama_cpp" }, pendingComputeUnit))
-                                    modelRepository.rememberSelected(model, pendingComputeUnit)
-                                    selectedComputeUnit = pendingComputeUnit
+                                    val computeUnit = if (paths.runtime_id == "qairt") "npu" else pendingComputeUnit
+                                    llm.useManagedModel(ManagedModel(paths.model_name, paths.model_path, paths.tokenizer_path, paths.runtime_id.ifEmpty { model.runtimeId }, computeUnit))
+                                    modelRepository.rememberSelected(model, computeUnit)
+                                    selectedComputeUnit = computeUnit
                                     selectedModel = model.displayName
-                                    modelState = "Loading · ${pendingComputeUnit.uppercase()} · local model"
+                                    modelState = "Loading · ${computeUnit.uppercase()} · local model"
                                     showModelPicker = false
                                     val loadResult = withContext(Dispatchers.IO) { llm.preload() }
                                     modelState = loadResult.fold(
-                                        { "Ready · ${pendingComputeUnit.uppercase()} · warmed up" },
+                                        { "Ready · ${computeUnit.uppercase()} · warmed up" },
                                         { "Model load failed · ${it.message ?: "try again"}" }
                                     )
                                 }
