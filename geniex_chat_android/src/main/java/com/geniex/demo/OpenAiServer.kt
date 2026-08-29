@@ -30,6 +30,8 @@ import kotlinx.serialization.json.put
 class OpenAiServer(
     private val port: Int,
     private val modelName: () -> String,
+    private val isModelLoaded: () -> Boolean,
+    private val deviceInfo: () -> JsonObject,
     private val complete: suspend (List<ApiMessage>) -> String,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -92,6 +94,8 @@ class OpenAiServer(
             val method = parts[0]
             val path = parts[1].substringBefore('?')
             when {
+                method == "GET" && path == "/health" -> respond(writer, 200, health())
+                method == "GET" && path == "/tools/device" -> respond(writer, 200, deviceInfo())
                 method == "GET" && path == "/v1/models" -> respond(writer, 200, models())
                 method == "POST" && path == "/v1/chat/completions" -> chat(writer, String(body))
                 else -> respond(writer, 404, error("not found"))
@@ -140,6 +144,14 @@ class OpenAiServer(
             put("object", "model")
             put("owned_by", "geniex")
         })))
+    }
+
+    private fun health(): JsonObject = buildJsonObject {
+        put("ok", true)
+        put("server", "geniex")
+        put("model", modelName())
+        put("model_loaded", isModelLoaded())
+        put("openai_base_url", "/v1")
     }
 
     private fun error(message: String): JsonObject = buildJsonObject {

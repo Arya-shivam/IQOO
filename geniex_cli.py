@@ -12,12 +12,14 @@ import urllib.request
 from pathlib import Path
 
 BASE_URL = os.environ.get("GENIEX_BASE_URL", "http://127.0.0.1:8080/v1").rstrip("/")
+ROOT_URL = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
 
 
 def api(path: str, payload: dict | None = None) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
+    base_url = ROOT_URL if path == "/health" or path.startswith("/tools/") else BASE_URL
     request = urllib.request.Request(
-        f"{BASE_URL}{path}",
+        f"{base_url}{path}",
         data=data,
         headers={"Content-Type": "application/json"} if data else {},
         method="POST" if data else "GET",
@@ -70,6 +72,8 @@ def main() -> None:
     ask_parser = sub.add_parser("ask", help="Ask the phone model a question")
     ask_parser.add_argument("prompt", nargs="+")
     sub.add_parser("models", help="List models exposed by the phone server")
+    sub.add_parser("health", help="Show phone server health")
+    sub.add_parser("device", help="Show native Android device info")
 
 
     sub.add_parser("status", help="Show Git status")
@@ -89,6 +93,10 @@ def main() -> None:
         print(ask(" ".join(args.prompt)))
     elif args.command == "models":
         print(json.dumps(api("/models"), indent=2))
+    elif args.command == "health":
+        print(json.dumps(api("/health"), indent=2))
+    elif args.command == "device":
+        print(json.dumps(api("/tools/device"), indent=2))
     elif args.command == "status":
         print(run("git", "status", "--short"), end="")
     elif args.command == "pull":
