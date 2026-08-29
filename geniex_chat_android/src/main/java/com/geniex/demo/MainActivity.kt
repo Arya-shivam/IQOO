@@ -30,6 +30,8 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.AdapterView
 import android.widget.Button
+import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.view.Gravity
 import android.widget.FrameLayout
 import android.widget.ImageButton
