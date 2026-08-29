@@ -9,6 +9,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -17,6 +18,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
+import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.PowerManager
@@ -76,6 +79,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -112,6 +118,8 @@ class MainActivity : FragmentActivity() {
     private val apiServer = OpenAiServer(
         port = 8080,
         modelName = { selectModelId.ifEmpty { "geniex" } },
+        isModelLoaded = { hasLoadedModel() },
+        deviceInfo = ::deviceInfo,
         complete = ::completeApiChat,
     )
     private val chatList = arrayListOf<ChatMessage>()
@@ -299,6 +307,28 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun hasLoadedModel(): Boolean = isLoadLlmModel || isLoadVlmModel
+    private fun deviceInfo(): JsonObject {
+        val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status = battery?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+        val percent = if (level >= 0 && scale > 0) level * 100 / scale else -1
+        return buildJsonObject {
+            put("manufacturer", Build.MANUFACTURER)
+            put("brand", Build.BRAND)
+            put("model", Build.MODEL)
+            put("device", Build.DEVICE)
+            put("android_version", Build.VERSION.RELEASE)
+            put("sdk_int", Build.VERSION.SDK_INT)
+            put("battery_percent", percent)
+            put("charging", charging)
+            put("model_loaded", hasLoadedModel())
+            put("selected_model", selectModelId.ifEmpty { "geniex" })
+        }
+    }
+
     private suspend fun completeApiChat(messages: List<ApiMessage>): String {
         check(isLoadLlmModel) { "load a text model in the app first" }
         val input = messages.map { ChatMessage(role = it.role, it.content) }.toTypedArray()
