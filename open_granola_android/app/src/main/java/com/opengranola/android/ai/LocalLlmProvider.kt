@@ -13,18 +13,28 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
+import org.json.JSONArray
 
 /** Stable boundary for local inference. GenieX is wired behind this interface. */
 interface LocalLlmProvider {
     val name: String
     suspend fun summarize(transcript: String, userNotes: String, context: String = ""): String
-    suspend fun chat(message: String, context: String, history: List<AssistantTurn>): InferenceResult
+    suspend fun chat(message: String, context: String, history: List<AssistantTurn>, onToken: suspend (String) -> Unit = {}): InferenceResult
     suspend fun generatePlan(objective: String, context: String): GeneratedPlan
+    suspend fun extractCommitments(meetingTitle: String, transcript: String, summary: String): List<GeneratedCommitment>
+    suspend fun generateDailyBriefing(context: String): InferenceResult
 }
 
 data class AssistantTurn(val role: String, val content: String)
 data class GeneratedTask(val title: String, val details: String, val priority: Int)
 data class GeneratedPlan(val title: String, val objective: String, val tasks: List<GeneratedTask>)
+data class GeneratedCommitment(
+    val title: String,
+    val owner: String,
+    val dueText: String,
+    val evidence: String,
+    val confidence: Float
+)
 data class InferenceStats(
     val promptTokens: Int,
     val generatedTokens: Int,
@@ -50,6 +60,11 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         llm = null
     }
 
+    /** Warm the native runtime before the first user request. */
+    suspend fun preload(): Result<Unit> = inferenceLock.withLock {
+        runCatching { ensureLlm(); Unit }
+    }
+
     override suspend fun summarize(transcript: String, userNotes: String, context: String): String {
         val prompt = """
             You are pa, a private on-device meeting assistant. Summarize faithfully.
@@ -63,8 +78,8 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         return generate(arrayOf(ChatMessage("user", prompt)), 2048).text
     }
 
-    override suspend fun chat(message: String, context: String, history: List<AssistantTurn>): InferenceResult {
-        val messages = history.takeLast(8).map { ChatMessage(it.role, it.content) }.toMutableList()
+    override suspend fun chat(message: String, context: String, history: List<AssistantTurn>, onToken: suspend (String) -> Unit): InferenceResult {
+        val messages = history.takeLast(4).map { ChatMessage(it.role, it.content) }.toMutableList()
         messages += ChatMessage("user", """
             You are pa, a private local personal assistant. Use only relevant context below.
             Be concise, acknowledge uncertainty, and never claim an action was executed.
@@ -75,7 +90,7 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             USER MESSAGE:
             $message
         """.trimIndent())
-        return generate(messages.toTypedArray(), 1536)
+        return generate(messages.toTypedArray(), 768, onToken)
     }
 
     override suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
@@ -91,7 +106,48 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         return parsePlan(raw, objective)
     }
 
-    private suspend fun generate(messages: Array<ChatMessage>, maxTokens: Int): InferenceResult = inferenceLock.withLock {
+    override suspend fun extractCommitments(
+        meetingTitle: String,
+        transcript: String,
+        summary: String
+    ): List<GeneratedCommitment> {
+        val raw = generate(arrayOf(ChatMessage("user", """
+            You are pa. Extract only explicit commitments, promises, assigned action items, and deadlines from this meeting.
+            Return only a JSON array with this shape:
+            [{"title":"...","owner":"...","due":"...","evidence":"exact short supporting phrase","confidence":0.0}]
+            Use an empty string when owner or due date is not stated. Confidence must be between 0 and 1.
+            Do not infer tasks that were not actually agreed. Return [] if there are none. Do not include markdown.
+
+            Meeting: $meetingTitle
+            Summary: ${summary.take(3500)}
+            Transcript excerpt: ${transcript.take(5000)}
+        """.trimIndent())), 1024).text
+        return parseCommitments(raw).map { commitment ->
+            if (isEvidenceVerified(commitment.evidence, transcript, summary)) {
+                commitment
+            } else {
+                commitment.copy(evidence = "", confidence = commitment.confidence.coerceAtMost(.45f))
+            }
+        }
+    }
+
+    override suspend fun generateDailyBriefing(context: String): InferenceResult {
+        return generate(arrayOf(ChatMessage("user", """
+            You are pa, a private intent-to-reality assistant. Create a concise daily briefing from the local context.
+            Compare open commitments and plans with notification and app-usage signals. Be supportive, factual, and never judgmental.
+            Write exactly three short sections: Focus, Reality check, Next step.
+            Do not invent deadlines or claim an action was completed. Keep the whole response under 130 words.
+
+            LOCAL CONTEXT:
+            $context
+        """.trimIndent())), 512)
+    }
+
+    private suspend fun generate(
+        messages: Array<ChatMessage>,
+        maxTokens: Int,
+        onToken: suspend (String) -> Unit = {}
+    ): InferenceResult = inferenceLock.withLock {
         val activeLlm = ensureLlm()
         val formatted = activeLlm.applyChatTemplate(messages, null, false, false).getOrThrow().formattedText
         val output = StringBuilder()
@@ -101,7 +157,10 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         var decodeSpeed = 0.0
         activeLlm.generateStreamFlow(formatted, GenerationConfig().apply { this.maxTokens = maxTokens }).collect { event ->
             when (event) {
-                is LlmStreamResult.Token -> output.append(event.text)
+                is LlmStreamResult.Token -> {
+                    output.append(event.text)
+                    onToken(event.text)
+                }
                 is LlmStreamResult.Completed -> {
                     promptTokens = event.profile.promptTokens.toInt()
                     generatedTokens = event.profile.generatedTokens.toInt()
@@ -143,6 +202,32 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         }.getOrElse {
             GeneratedPlan("Plan for ${objective.take(48)}", objective, listOf(GeneratedTask("Review the generated plan", raw.take(1200), 1)))
         }
+    }
+
+    private fun parseCommitments(raw: String): List<GeneratedCommitment> {
+        val start = raw.indexOf('[')
+        val end = raw.lastIndexOf(']')
+        require(start >= 0 && end >= start) { "The model did not return a commitment list" }
+        val array = JSONArray(raw.substring(start, end + 1))
+        return (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            val title = item.optString("title").trim()
+            if (title.isBlank()) return@mapNotNull null
+            GeneratedCommitment(
+                title = title.take(240),
+                owner = item.optString("owner").trim().take(100),
+                dueText = item.optString("due").trim().take(100),
+                evidence = item.optString("evidence").trim().take(500),
+                confidence = item.optDouble("confidence", .6).toFloat().coerceIn(0f, 1f)
+            )
+        }
+    }
+
+    private fun isEvidenceVerified(evidence: String, transcript: String, summary: String): Boolean {
+        if (evidence.isBlank()) return false
+        fun normalize(value: String) = value.lowercase().replace(Regex("\\s+"), " ").trim()
+        val needle = normalize(evidence)
+        return needle.length >= 8 && (normalize(transcript).contains(needle) || normalize(summary).contains(needle))
     }
 
     private suspend fun ensureLlm(): LlmWrapper {

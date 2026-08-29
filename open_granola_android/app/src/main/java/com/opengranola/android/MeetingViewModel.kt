@@ -8,6 +8,7 @@ import com.opengranola.android.data.toEntity
 import com.opengranola.android.data.toModel
 import com.opengranola.android.model.Meeting
 import com.opengranola.android.ai.GeneratedPlan
+import com.opengranola.android.ai.GeneratedCommitment
 import com.opengranola.android.context.AssistantContext
 import com.opengranola.android.context.ContextAssembler
 import com.opengranola.android.data.ChatMessageEntity
@@ -16,7 +17,10 @@ import com.opengranola.android.data.ContextEventEntity
 import com.opengranola.android.data.MemoryEntity
 import com.opengranola.android.data.PlanEntity
 import com.opengranola.android.data.PlanTaskEntity
+import com.opengranola.android.data.CommitmentEntity
+import com.opengranola.android.data.DailyInsightEntity
 import com.opengranola.android.usage.UsageSnapshot
+import com.opengranola.android.calendar.CalendarSnapshot
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,6 +54,10 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
     val planTasks = assistantDao.observePlanTasks()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val chatMessages = assistantDao.observeMessages(ContextAssembler.DEFAULT_SESSION)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val commitments = assistantDao.observeCommitments()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val dailyInsights = assistantDao.observeDailyInsights()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
@@ -107,7 +115,52 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             dao.clearSummary(id)
             assistantDao.deleteEvent("meeting:$id")
+            assistantDao.deleteCommitmentsForMeeting(id)
         }
+    }
+
+    suspend fun replaceMeetingCommitments(meeting: Meeting, generated: List<GeneratedCommitment>) {
+        val now = System.currentTimeMillis()
+        val entities = generated.map { item ->
+            CommitmentEntity(
+                id = UUID.randomUUID().toString(),
+                meetingId = meeting.id,
+                sourceTitle = meeting.title,
+                title = item.title,
+                owner = item.owner,
+                dueText = item.dueText,
+                evidence = item.evidence,
+                confidence = item.confidence,
+                status = "open",
+                createdAt = now,
+                updatedAt = now
+            )
+        }
+        assistantDao.replaceMeetingCommitments(meeting.id, entities)
+    }
+
+    fun toggleCommitment(commitment: CommitmentEntity) {
+        viewModelScope.launch {
+            assistantDao.updateCommitmentStatus(
+                commitment.id,
+                if (commitment.status == "done") "open" else "done",
+                System.currentTimeMillis()
+            )
+        }
+    }
+
+    fun deleteCommitment(id: String) {
+        viewModelScope.launch { assistantDao.deleteCommitment(id) }
+    }
+
+    suspend fun saveDailyInsight(briefing: String, snapshotId: String) {
+        assistantDao.saveDailyInsight(
+            DailyInsightEntity(todayKey(), briefing.trim(), snapshotId, 0, System.currentTimeMillis())
+        )
+    }
+
+    fun rateDailyInsight(date: String, helpful: Boolean) {
+        viewModelScope.launch { assistantDao.updateInsightFeedback(date, if (helpful) 1 else -1) }
     }
 
     fun rememberMeeting(meeting: Meeting) {
@@ -131,6 +184,27 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun recordCalendar(snapshot: CalendarSnapshot) {
+        if (!snapshot.hasPermission) return
+        viewModelScope.launch {
+            val formatter = java.text.SimpleDateFormat("EEE, MMM d h:mm a", java.util.Locale.getDefault())
+            val events = snapshot.events.map { event ->
+                val reminder = event.reminderMinutes?.let { " Reminder ${it} minutes before." }.orEmpty()
+                val location = event.location.takeIf { it.isNotBlank() }?.let { " Location: $it." }.orEmpty()
+                ContextEventEntity(
+                    id = "calendar:${event.id}:${event.startsAt}",
+                    source = "calendar",
+                    type = "calendar",
+                    title = event.title,
+                    content = "Starts ${formatter.format(java.util.Date(event.startsAt))}; calendar ${event.calendarName}.$location$reminder",
+                    timestamp = event.startsAt,
+                    importance = .75f
+                )
+            }
+            assistantDao.replaceCalendarEvents(events)
+        }
+    }
+
     private val notificationDao = OpenGranolaDatabase.get(application).notificationDao()
     val recentNotifications = notificationDao.observeRecent()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -147,4 +221,7 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         set(java.util.Calendar.SECOND, 0)
         set(java.util.Calendar.MILLISECOND, 0)
     }.timeInMillis
+
+    private fun todayKey(): String = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        .format(java.util.Date())
 }

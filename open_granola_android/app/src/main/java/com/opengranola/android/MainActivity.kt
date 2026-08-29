@@ -41,6 +41,10 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Insights
+import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.TrackChanges
+import androidx.compose.material.icons.rounded.ThumbDown
+import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.ModelTraining
@@ -51,6 +55,9 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.Summarize
 import androidx.compose.material.icons.rounded.WbSunny
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Event
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
@@ -99,6 +106,8 @@ import com.opengranola.android.data.MemoryEntity
 import com.opengranola.android.data.PlanEntity
 import com.opengranola.android.data.PlanTaskEntity
 import com.opengranola.android.data.ChatMessageEntity
+import com.opengranola.android.data.CommitmentEntity
+import com.opengranola.android.data.DailyInsightEntity
 import com.opengranola.android.model.Meeting
 import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
@@ -110,12 +119,30 @@ import kotlinx.coroutines.withContext
 import com.opengranola.android.usage.AppUsage
 import com.opengranola.android.usage.UsageSnapshot
 import com.opengranola.android.usage.UsageStatsRepository
+import com.opengranola.android.calendar.CalendarRepository
+import com.opengranola.android.calendar.CalendarSnapshot
+import com.opengranola.android.calendar.LocalCalendarEvent
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.sin
+
+private val DISPLAY_THINK_BLOCK = Regex("<think>.*?</think>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+private val DISPLAY_LEADING_THINK_CLOSE = Regex("^\\s*</think>\\s*", RegexOption.IGNORE_CASE)
+private val DISPLAY_SPECIAL_TOKEN = Regex("<\\|[^>]+\\|>|\\[/?INST\\]", RegexOption.IGNORE_CASE)
+private val DISPLAY_ROLE_PREFIX = Regex(
+    "^\\s*(?:#{1,6}\\s*)?(?:assistant|model|system|user|pa)\\b(?:\\s*[:\\-]\\s*|\\s*\\n+|\\s+)",
+    RegexOption.IGNORE_CASE
+)
+
+private fun sanitizeForDisplay(raw: String): String = raw
+    .replace(DISPLAY_THINK_BLOCK, "")
+    .replace(DISPLAY_LEADING_THINK_CLOSE, "")
+    .replace(DISPLAY_SPECIAL_TOKEN, "")
+    .replace(DISPLAY_ROLE_PREFIX, "")
+    .trim()
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -136,6 +163,8 @@ class MainActivity : ComponentActivity() {
         val planTasks by viewModel.planTasks.collectAsState()
         val chatMessages by viewModel.chatMessages.collectAsState()
         val userName by viewModel.userName.collectAsState()
+        val commitments by viewModel.commitments.collectAsState()
+        val dailyInsights by viewModel.dailyInsights.collectAsState()
         var selectedId by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
@@ -154,8 +183,13 @@ class MainActivity : ComponentActivity() {
         var pendingComputeUnit by remember { mutableStateOf(selectedComputeUnit) }
         var chatState by remember { mutableStateOf("Ready · context stays on this device") }
         var chatBusy by remember { mutableStateOf(false) }
+        var streamingResponse by remember { mutableStateOf("") }
         var lastInferenceStats by remember { mutableStateOf<InferenceStats?>(null) }
         var planState by remember { mutableStateOf("Describe an objective and pa will build a plan") }
+        var briefingBusy by remember { mutableStateOf(false) }
+        var briefingState by remember { mutableStateOf("Connect intention with how today is unfolding") }
+        var calendarSnapshot by remember { mutableStateOf(CalendarSnapshot()) }
+        var calendarRefresh by remember { mutableIntStateOf(0) }
         val transcriber = remember {
             LiveTranscriber(
                 this@MainActivity,
@@ -169,7 +203,12 @@ class MainActivity : ComponentActivity() {
                 runCatching { modelRepository.paths(saved) }.getOrNull()?.let { paths ->
                     llm.useManagedModel(ManagedModel(paths.model_name, paths.model_path, paths.tokenizer_path, paths.runtime_id.ifEmpty { "llama_cpp" }, selectedComputeUnit))
                     selectedModel = saved.displayName
-                    modelState = "Ready · ${selectedComputeUnit.uppercase()} · restored"
+                    modelState = "Loading · ${selectedComputeUnit.uppercase()} · local model"
+                    val loadResult = withContext(Dispatchers.IO) { llm.preload() }
+                    modelState = loadResult.fold(
+                        { "Ready · ${selectedComputeUnit.uppercase()} · warmed up" },
+                        { "Model load failed · ${it.message ?: "try again"}" }
+                    )
                 }
             }
         }
@@ -194,6 +233,14 @@ class MainActivity : ComponentActivity() {
                 transcriber.start()
             }
         }
+        val calendarPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { calendarRefresh++ }
+        LaunchedEffect(calendarRefresh) {
+            val snapshot = withContext(Dispatchers.IO) { CalendarRepository(this@MainActivity).upcoming() }
+            calendarSnapshot = snapshot
+            viewModel.recordCalendar(snapshot)
+        }
 
         MaterialTheme {
             Surface(Modifier.fillMaxSize()) {
@@ -216,8 +263,13 @@ class MainActivity : ComponentActivity() {
                                     modelRepository.rememberSelected(model, pendingComputeUnit)
                                     selectedComputeUnit = pendingComputeUnit
                                     selectedModel = model.displayName
-                                    modelState = "Ready · ${pendingComputeUnit.uppercase()} · GenieX"
+                                    modelState = "Loading · ${pendingComputeUnit.uppercase()} · local model"
                                     showModelPicker = false
+                                    val loadResult = withContext(Dispatchers.IO) { llm.preload() }
+                                    modelState = loadResult.fold(
+                                        { "Ready · ${pendingComputeUnit.uppercase()} · warmed up" },
+                                        { "Model load failed · ${it.message ?: "try again"}" }
+                                    )
                                 }
                             }
                         },
@@ -254,6 +306,7 @@ class MainActivity : ComponentActivity() {
                     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                         notificationAccessEnabled = NotificationReadService.isEnabled(this@MainActivity)
                         usageRefresh++
+                        calendarRefresh++
                     }
                     LaunchedEffect(usageRefresh) {
                         val snapshot = withContext(Dispatchers.IO) { UsageStatsRepository(this@MainActivity).today() }
@@ -264,6 +317,7 @@ class MainActivity : ComponentActivity() {
                         meetings = meetings,
                         userName = userName,
                         usage = usage,
+                        calendarSnapshot = calendarSnapshot,
                         modelName = selectedModel,
                         modelState = modelState,
                         recentNotifications = recentNotifications,
@@ -271,34 +325,66 @@ class MainActivity : ComponentActivity() {
                         memories = memories,
                         plans = plans,
                         planTasks = planTasks,
+                        commitments = commitments,
+                        dailyInsight = dailyInsights.firstOrNull(),
                         chatMessages = chatMessages,
                         chatState = chatState,
                         chatBusy = chatBusy,
+                        streamingResponse = streamingResponse,
                         lastInferenceStats = lastInferenceStats,
                         planState = planState,
+                        briefingState = briefingState,
+                        briefingBusy = briefingBusy,
                         computeUnit = selectedComputeUnit,
                         notificationAccessEnabled = notificationAccessEnabled,
                         onUsagePermission = { startActivity(UsageStatsRepository(this@MainActivity).settingsIntent()) },
                         onNotificationPermission = { NotificationReadService.openSettings(this@MainActivity) },
+                        onCalendarPermission = { calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR) },
+                        onRefreshCalendar = { calendarRefresh++ },
                         onLoadModel = { pendingComputeUnit = selectedComputeUnit; showModelPicker = true },
                         onRefreshUsage = { usageRefresh++ },
                         onSendChat = { message ->
                             if (message.isNotBlank()) scope.launch {
                                 chatBusy = true
-                                runCatching {
-                                    viewModel.saveChat("user", message.trim())
-                                    chatState = "Thinking locally…"
-                                    val context = viewModel.buildContext("interactive chat", message)
-                                    val history = chatMessages.takeLast(8).map { AssistantTurn(it.role, it.content) }
-                                    llm.chat(message.trim(), context.text, history)
-                                }.onSuccess { response ->
+                                streamingResponse = ""
+                                try {
+                                    chatState = "Retrieving local context…"
+                                    val contextAndHistory = withContext(Dispatchers.IO) {
+                                        val context = viewModel.buildContext("interactive chat")
+                                        val history = chatMessages.takeLast(4).map { AssistantTurn(it.role, it.content) }
+                                        viewModel.saveChat("user", message.trim())
+                                        context to history
+                                    }
+                                    chatState = "Generating locally…"
+                                    val response = withContext(Dispatchers.IO) {
+                                        val rawStream = StringBuilder()
+                                        var lastUiUpdate = 0L
+                                        llm.chat(
+                                            message.trim(),
+                                            contextAndHistory.first.text,
+                                            contextAndHistory.second,
+                                            onToken = { token ->
+                                                rawStream.append(token)
+                                                val now = android.os.SystemClock.uptimeMillis()
+                                                if (lastUiUpdate == 0L || now - lastUiUpdate >= 50L) {
+                                                    lastUiUpdate = now
+                                                    withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                                                        streamingResponse = sanitizeForDisplay(rawStream.toString())
+                                                    }
+                                                }
+                                            }
+                                        )
+                                    }
                                     viewModel.saveChat("assistant", response.text)
                                     lastInferenceStats = response.stats
+                                    streamingResponse = ""
                                     chatState = "Context used · response stored locally"
-                                }.onFailure { error ->
+                                } catch (error: Throwable) {
+                                    streamingResponse = ""
                                     chatState = "Chat failed: ${error.message ?: "check the local model"}"
+                                } finally {
+                                    chatBusy = false
                                 }
-                                chatBusy = false
                             }
                         },
                         onGeneratePlan = { objective ->
@@ -313,13 +399,35 @@ class MainActivity : ComponentActivity() {
                                 }.onFailure { error -> planState = "Plan failed: ${error.message ?: "check the local model"}" }
                             }
                         },
+                        onGenerateBriefing = {
+                            if (!briefingBusy) scope.launch {
+                                briefingBusy = true
+                                briefingState = "Comparing commitments with today's signals…"
+                                runCatching {
+                                    val context = viewModel.buildContext("daily intent-reality briefing")
+                                    val response = llm.generateDailyBriefing(context.text)
+                                    viewModel.saveDailyInsight(response.text, context.snapshotId)
+                                }.onSuccess {
+                                    briefingState = "Daily briefing stored privately"
+                                }.onFailure { error ->
+                                    briefingState = "Briefing failed: ${error.message ?: "check the local model"}"
+                                }
+                                briefingBusy = false
+                            }
+                        },
                         onAddMemory = viewModel::addMemory,
                         onArchiveMemory = viewModel::archiveMemory,
                         onToggleTask = viewModel::toggleTask,
+                        onToggleCommitment = viewModel::toggleCommitment,
+                        onDeleteCommitment = viewModel::deleteCommitment,
+                        onRateDailyInsight = viewModel::rateDailyInsight,
                         onDeletePlan = viewModel::deletePlan,
                         onDeleteMeetingSummary = viewModel::deleteMeetingSummary,
                         onUpdateUserName = viewModel::updateUserName,
                         onOpen = { selectedId = it.id },
+                        onOpenCommitmentSource = { meetingId ->
+                            if (meetings.any { it.id == meetingId }) selectedId = meetingId
+                        },
                         onNew = {
                             val meeting = Meeting(title = "New meeting")
                             viewModel.save(meeting)
@@ -375,7 +483,15 @@ class MainActivity : ComponentActivity() {
                                     viewModel.save(summarized)
                                     viewModel.rememberMeeting(summarized)
                                     latestSummary = summary
-                                    summaryState = "Summary ready"
+                                    summaryState = "Extracting commitments…"
+                                    runCatching {
+                                        llm.extractCommitments(summarized.title, summarized.transcript, summary)
+                                    }.onSuccess { extracted ->
+                                        viewModel.replaceMeetingCommitments(summarized, extracted)
+                                        summaryState = "Summary ready · ${extracted.size} commitments found"
+                                    }.onFailure {
+                                        summaryState = "Summary ready · commitment extraction unavailable"
+                                    }
                                 }.onFailure { error ->
                                     summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
                                 }
@@ -391,7 +507,15 @@ class MainActivity : ComponentActivity() {
                                     viewModel.save(summarized)
                                     viewModel.rememberMeeting(summarized)
                                     latestSummary = generated
-                                    summaryState = "Summary ready"
+                                    summaryState = "Extracting commitments…"
+                                    runCatching {
+                                        llm.extractCommitments(summarized.title, summarized.transcript, generated)
+                                    }.onSuccess { extracted ->
+                                        viewModel.replaceMeetingCommitments(summarized, extracted)
+                                        summaryState = "Summary ready · ${extracted.size} commitments found"
+                                    }.onFailure {
+                                        summaryState = "Summary ready · commitment extraction unavailable"
+                                    }
                                 }.onFailure { error ->
                                     summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
                                 }
@@ -409,6 +533,7 @@ private fun AssistantDashboard(
     meetings: List<Meeting>,
     userName: String,
     usage: UsageSnapshot,
+    calendarSnapshot: CalendarSnapshot,
     modelName: String?,
     modelState: String,
     recentNotifications: List<NotificationEntity>,
@@ -416,26 +541,38 @@ private fun AssistantDashboard(
     memories: List<MemoryEntity>,
     plans: List<PlanEntity>,
     planTasks: List<PlanTaskEntity>,
+    commitments: List<CommitmentEntity>,
+    dailyInsight: DailyInsightEntity?,
     chatMessages: List<ChatMessageEntity>,
     chatState: String,
     chatBusy: Boolean,
     lastInferenceStats: InferenceStats?,
+    streamingResponse: String,
     planState: String,
+    briefingState: String,
+    briefingBusy: Boolean,
     computeUnit: String,
     notificationAccessEnabled: Boolean,
     onUsagePermission: () -> Unit,
     onNotificationPermission: () -> Unit,
+    onCalendarPermission: () -> Unit,
+    onRefreshCalendar: () -> Unit,
     onLoadModel: () -> Unit,
     onRefreshUsage: () -> Unit,
     onSendChat: (String) -> Unit,
     onGeneratePlan: (String) -> Unit,
+    onGenerateBriefing: () -> Unit,
     onAddMemory: (String) -> Unit,
     onArchiveMemory: (String) -> Unit,
     onToggleTask: (PlanTaskEntity) -> Unit,
+    onToggleCommitment: (CommitmentEntity) -> Unit,
+    onDeleteCommitment: (String) -> Unit,
+    onRateDailyInsight: (String, Boolean) -> Unit,
     onDeletePlan: (String) -> Unit,
     onDeleteMeetingSummary: (String) -> Unit,
     onUpdateUserName: (String) -> Unit,
     onOpen: (Meeting) -> Unit,
+    onOpenCommitmentSource: (String) -> Unit,
     onNew: () -> Unit
 ) {
     var tab by remember { mutableIntStateOf(0) }
@@ -446,6 +583,7 @@ private fun AssistantDashboard(
     var nameDraft by remember(userName) { mutableStateOf(userName) }
     var planPendingDelete by remember { mutableStateOf<PlanEntity?>(null) }
     var meetingPendingSummaryDelete by remember { mutableStateOf<Meeting?>(null) }
+    var commitmentPendingDelete by remember { mutableStateOf<CommitmentEntity?>(null) }
     val dashboardScrollState = rememberScrollState()
 
     LaunchedEffect(tab, chatBusy, chatMessages.size) {
@@ -498,6 +636,18 @@ private fun AssistantDashboard(
             dismissButton = { TextButton(onClick = { meetingPendingSummaryDelete = null }) { Text("Cancel") } }
         )
     }
+    commitmentPendingDelete?.let { commitment ->
+        AlertDialog(
+            onDismissRequest = { commitmentPendingDelete = null },
+            icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+            title = { Text("Delete commitment?") },
+            text = { Text("This removes the commitment from the ledger and from pa's future context. The source meeting remains unchanged.") },
+            confirmButton = {
+                Button(onClick = { onDeleteCommitment(commitment.id); commitmentPendingDelete = null }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { commitmentPendingDelete = null }) { Text("Cancel") } }
+        )
+    }
     Scaffold(
         bottomBar = {
             NavigationBar(containerColor = Color.Transparent) {
@@ -537,6 +687,22 @@ private fun AssistantDashboard(
             if (tab == 0) {
                 Text(SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date()).uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 TimeOfDayHero(userName, usage)
+                IntentRealityCard(
+                    commitments = commitments,
+                    planTasks = planTasks,
+                    usage = usage,
+                    notificationsToday = notificationsToday,
+                    dailyInsight = dailyInsight,
+                    state = briefingState,
+                    busy = briefingBusy,
+                    onGenerate = onGenerateBriefing,
+                    onRate = onRateDailyInsight
+                )
+                CalendarSection(
+                    snapshot = calendarSnapshot,
+                    onPermission = onCalendarPermission,
+                    onRefresh = onRefreshCalendar
+                )
                 if (!usage.hasPermission) {
                     Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer), onClick = onUsagePermission) {
                         Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -612,7 +778,7 @@ private fun AssistantDashboard(
                 if (chatMessages.isEmpty()) Text("Start a conversation. Messages remain on this device.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 chatMessages.takeLast(20).forEach { ChatBubble(it) }
                 if (chatBusy) {
-                    ChatLoadingBubble(computeUnit)
+                    ChatLoadingBubble(computeUnit, streamingResponse)
                 }
                 OutlinedTextField(
                     value = chatDraft,
@@ -644,7 +810,40 @@ private fun AssistantDashboard(
                 }
             } else if (tab == 2) {
                 Text("PLANS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Text("Plans generated from your context", style = MaterialTheme.typography.headlineSmall)
+                Text("Intent and follow-through", style = MaterialTheme.typography.headlineSmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text("Commitment ledger", style = MaterialTheme.typography.titleLarge)
+                        Text("Source-linked promises from your meetings", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(50)) {
+                        Text(
+                            "${commitments.count { it.status == "open" }} OPEN",
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+                if (commitments.isEmpty()) {
+                    Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text("Summarize a meeting and pa will extract explicit commitments with supporting evidence.")
+                        }
+                    }
+                } else {
+                    commitments.forEach { commitment ->
+                        CommitmentCard(
+                            commitment = commitment,
+                            onToggle = { onToggleCommitment(commitment) },
+                            onOpenSource = { onOpenCommitmentSource(commitment.meetingId) },
+                            onDelete = { commitmentPendingDelete = commitment }
+                        )
+                    }
+                }
+                Divider()
+                Text("Generated plans", style = MaterialTheme.typography.titleLarge)
                 Text(planState, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     objectiveDraft,
@@ -837,6 +1036,215 @@ private fun positiveMessage(userName: String, day: Int): String {
 }
 
 @androidx.compose.runtime.Composable
+private fun CalendarSection(
+    snapshot: CalendarSnapshot,
+    onPermission: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    if (!snapshot.hasPermission) {
+        Card(
+            colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            onClick = onPermission
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.CalendarMonth, contentDescription = null)
+                Column(Modifier.weight(1f)) {
+                    Text("Connect your calendars", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Read upcoming local and synced Google Calendar events and reminders. Access stays on this device.",
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Text("Allow", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        return
+    }
+
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Column {
+            Text("Upcoming calendar", style = MaterialTheme.typography.titleLarge)
+            Text("Local and device-synced calendars", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+        IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Sync, contentDescription = "Refresh calendars") }
+    }
+    if (snapshot.events.isEmpty()) {
+        Text("No events found in the next seven days.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } else {
+        snapshot.events.take(5).forEach { CalendarEventCard(it) }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun CalendarEventCard(event: LocalCalendarEvent) {
+    val dateFormat = SimpleDateFormat("EEE, MMM d", Locale.getDefault())
+    val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Rounded.Event, contentDescription = null, modifier = Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(event.title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (event.allDay) "${dateFormat.format(Date(event.startsAt))} · all day"
+                    else "${dateFormat.format(Date(event.startsAt))} · ${timeFormat.format(Date(event.startsAt))}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                val details = buildList {
+                    if (event.calendarName.isNotBlank()) add(event.calendarName)
+                    event.reminderMinutes?.let { add("Reminder ${it}m before") }
+                }.joinToString(" · ")
+                if (details.isNotBlank()) Text(details, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun IntentRealityCard(
+    commitments: List<CommitmentEntity>,
+    planTasks: List<PlanTaskEntity>,
+    usage: UsageSnapshot,
+    notificationsToday: Int,
+    dailyInsight: DailyInsightEntity?,
+    state: String,
+    busy: Boolean,
+    onGenerate: () -> Unit,
+    onRate: (String, Boolean) -> Unit
+) {
+    val openCommitments = commitments.count { it.status == "open" }
+    val openTasks = planTasks.count { it.status != "done" }
+    val todayInsight = dailyInsight?.takeIf { it.date == currentDateKey() }
+    val topApp = usage.apps.firstOrNull()
+    Card(
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF10192B)),
+        shape = RoundedCornerShape(26.dp)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.TrackChanges, contentDescription = null, tint = Color(0xFF85F5CB))
+                Spacer(Modifier.width(9.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("INTENT–REALITY", color = Color(0xFF85F5CB), style = MaterialTheme.typography.labelMedium)
+                    Text("What matters versus where attention went", color = Color.White.copy(alpha = .7f), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DarkMetric("COMMITMENTS", openCommitments.toString(), Modifier.weight(1f))
+                DarkMetric("PLAN STEPS", openTasks.toString(), Modifier.weight(1f))
+                DarkMetric("ALERTS", notificationsToday.toString(), Modifier.weight(1f))
+            }
+            Text(
+                when {
+                    openCommitments == 0 && openTasks == 0 -> "No active commitments yet. Summarize a meeting or create a plan to start the loop."
+                    usage.hasPermission && topApp != null -> "$openCommitments commitments and $openTasks plan steps are open. ${topApp.label} has used ${formatMinutes(topApp.minutes)} today."
+                    else -> "$openCommitments commitments and $openTasks plan steps are open. Enable usage insights to compare them with today's attention."
+                },
+                color = Color.White.copy(alpha = .86f)
+            )
+            if (todayInsight != null) {
+                Surface(color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(18.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("TODAY'S PRIVATE BRIEFING", color = Color(0xFFFFCE73), style = MaterialTheme.typography.labelMedium)
+                        Text(todayInsight.briefing, color = Color.White)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Useful?", color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.labelSmall)
+                            IconButton(onClick = { onRate(todayInsight.date, true) }) {
+                                Icon(Icons.Rounded.ThumbUp, contentDescription = "Helpful", tint = if (todayInsight.feedback == 1) Color(0xFF85F5CB) else Color.White.copy(alpha = .7f))
+                            }
+                            IconButton(onClick = { onRate(todayInsight.date, false) }) {
+                                Icon(Icons.Rounded.ThumbDown, contentDescription = "Not helpful", tint = if (todayInsight.feedback == -1) Color(0xFFFF9AAD) else Color.White.copy(alpha = .7f))
+                            }
+                        }
+                    }
+                }
+            }
+            Text(state, color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.bodySmall)
+            Button(onClick = onGenerate, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                if (busy) {
+                    CircularProgressIndicator(modifier = Modifier.size(21.dp), strokeWidth = 2.5.dp)
+                    Spacer(Modifier.width(9.dp))
+                    Text("Reading today's local signals")
+                } else {
+                    Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (todayInsight == null) "Generate daily briefing" else "Refresh daily briefing")
+                }
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun DarkMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(14.dp)) {
+        Column(Modifier.padding(10.dp)) {
+            Text(value, color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Text(label, color = Color.White.copy(alpha = .56f), style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun CommitmentCard(
+    commitment: CommitmentEntity,
+    onToggle: () -> Unit,
+    onOpenSource: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val done = commitment.status == "done"
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onToggle) {
+                    Icon(
+                        if (done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                        contentDescription = if (done) "Mark open" else "Mark completed",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Text(commitment.title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, color = if (done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, contentDescription = "Delete commitment") }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (commitment.owner.isNotBlank()) CommitmentTag("Owner: ${commitment.owner}")
+                if (commitment.dueText.isNotBlank()) CommitmentTag("Due: ${commitment.dueText}")
+                CommitmentTag("${(commitment.confidence * 100).toInt()}% confidence")
+            }
+            if (commitment.evidence.isNotBlank()) {
+                Text("Evidence", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                Text("“${commitment.evidence}”", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = onOpenSource) {
+                Icon(Icons.Rounded.Summarize, contentDescription = null)
+                Spacer(Modifier.width(7.dp))
+                Text("Source: ${commitment.sourceTitle}")
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun CommitmentTag(text: String) {
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(50)) {
+        Text(text, modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+private fun currentDateKey(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+
+@androidx.compose.runtime.Composable
 private fun StatCard(label: String, value: String, caption: String, modifier: Modifier) {
     Card(modifier = modifier) { Column(Modifier.padding(12.dp)) { Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); Text(value, style = MaterialTheme.typography.titleLarge); Text(caption, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 }
@@ -901,7 +1309,7 @@ private fun InferenceStatsCard(stats: InferenceStats) {
 }
 
 @androidx.compose.runtime.Composable
-private fun ChatLoadingBubble(computeUnit: String) {
+private fun ChatLoadingBubble(computeUnit: String, streamingResponse: String) {
     Card(
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFFE9EEFF)),
         shape = RoundedCornerShape(18.dp),
@@ -921,6 +1329,13 @@ private fun ChatLoadingBubble(computeUnit: String) {
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+        }
+        if (streamingResponse.isNotBlank()) {
+            Text(
+                streamingResponse,
+                modifier = Modifier.padding(start = 56.dp, end = 15.dp, bottom = 15.dp),
+                color = MaterialTheme.colorScheme.onSurface
+            )
         }
     }
 }

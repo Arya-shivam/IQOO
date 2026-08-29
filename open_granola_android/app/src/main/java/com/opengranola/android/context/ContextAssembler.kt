@@ -17,19 +17,25 @@ class ContextAssembler(private val database: OpenGranolaDatabase) {
         val memories = assistant.relevantMemories(8)
         val plans = assistant.activePlans(3)
         val tasks = if (plans.isEmpty()) emptyList() else assistant.activeTasks(plans.map { it.id })
+        val commitments = assistant.activeCommitments(8)
         val messages = assistant.recentMessages(DEFAULT_SESSION, 8).reversed()
         // Meeting memory is intentionally summary-only. Raw transcripts never
         // enter general chat context, and clearing a summary removes that
         // meeting from future retrieval without deleting its transcript.
         val meetings = database.meetingDao().recent(12).filter { it.notes.isNotBlank() }.take(4)
         val notifications = database.notificationDao().recent(8)
-        val events = assistant.recentEvents(16).filter { it.type == "usage" }.take(8)
+        val recentEvents = assistant.recentEvents(40)
+        val usageEvents = recentEvents.filter { it.type == "usage" }.take(8)
+        val calendarEvents = recentEvents.filter { it.type == "calendar" }.sortedBy { it.timestamp }.take(12)
+        val includeConversation = !purpose.contains("interactive chat", ignoreCase = true)
         val sourceIds = buildList {
             addAll(memories.map { it.id })
             addAll(plans.map { it.id })
+            addAll(commitments.map { it.id })
             addAll(meetings.map { it.id })
             addAll(notifications.map { it.id })
-            addAll(events.map { it.id })
+            addAll(usageEvents.map { it.id })
+            addAll(calendarEvents.map { it.id })
         }
         val rendered = buildString {
             appendLine("Purpose: $purpose")
@@ -46,6 +52,12 @@ class ContextAssembler(private val database: OpenGranolaDatabase) {
                     tasks.filter { it.planId == plan.id }.take(6).forEach { appendLine("  - [${it.status}] ${it.title}: ${it.details}") }
                 }
             }
+            if (commitments.isNotEmpty()) {
+                appendLine("\nOpen commitments:")
+                commitments.forEach {
+                    appendLine("- ${it.title}; owner=${it.owner.ifBlank { "unknown" }}; due=${it.dueText.ifBlank { "not stated" }}; source=${it.sourceTitle}")
+                }
+            }
             if (meetings.isNotEmpty()) {
                 appendLine("\nMeeting memory (saved summaries only):")
                 meetings.forEach { appendLine("- ${it.title}: ${it.notes.take(700)}") }
@@ -54,15 +66,19 @@ class ContextAssembler(private val database: OpenGranolaDatabase) {
                 appendLine("\nRecent redacted notification signals:")
                 notifications.forEach { appendLine("- ${it.appLabel}: ${it.title}. ${it.body.take(220)}") }
             }
-            if (events.isNotEmpty()) {
-                appendLine("\nRecent app usage memory:")
-                events.forEach { appendLine("- ${it.source}/${it.type}: ${it.title}. ${it.content.take(240)}") }
+            if (calendarEvents.isNotEmpty()) {
+                appendLine("\nUpcoming local calendar events and reminders:")
+                calendarEvents.forEach { appendLine("- ${it.title}: ${it.content.take(300)}") }
             }
-            if (messages.isNotEmpty()) {
+            if (usageEvents.isNotEmpty()) {
+                appendLine("\nRecent app usage memory:")
+                usageEvents.forEach { appendLine("- ${it.source}/${it.type}: ${it.title}. ${it.content.take(240)}") }
+            }
+            if (includeConversation && messages.isNotEmpty()) {
                 appendLine("\nRecent conversation:")
                 messages.forEach { appendLine("${it.role}: ${it.content.take(500)}") }
             }
-        }.take(MAX_CONTEXT_CHARS)
+        }.take(if (purpose.contains("interactive chat", ignoreCase = true)) CHAT_CONTEXT_CHARS else MAX_CONTEXT_CHARS)
         val snapshotId = UUID.randomUUID().toString()
         assistant.saveSnapshot(
             ContextSnapshotEntity(snapshotId, purpose, rendered, sourceIds.joinToString(","), System.currentTimeMillis())
@@ -72,6 +88,7 @@ class ContextAssembler(private val database: OpenGranolaDatabase) {
 
     companion object {
         const val DEFAULT_SESSION = "default"
+        private const val CHAT_CONTEXT_CHARS = 3_600
         private const val MAX_CONTEXT_CHARS = 7_000
     }
 }

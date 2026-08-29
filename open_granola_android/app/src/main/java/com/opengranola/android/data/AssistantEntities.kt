@@ -72,3 +72,27 @@ data class ContextSnapshotEntity(
     val sourceIds: String,
     val createdAt: Long
 )
+
+@Entity(tableName = "commitments")
+data class CommitmentEntity(
+    @PrimaryKey val id: String,
+    val meetingId: String,
+    val sourceTitle: String,
+    val title: String,
+    val owner: String,
+    val dueText: String,
+    val evidence: String,
+    val confidence: Float,
+    val status: String,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Entity(tableName = "daily_insights")
+data class DailyInsightEntity(
+    @PrimaryKey val date: String,
+    val briefing: String,
+    val contextSnapshotId: String,
+    val feedback: Int,
+    val createdAt: Long
+)

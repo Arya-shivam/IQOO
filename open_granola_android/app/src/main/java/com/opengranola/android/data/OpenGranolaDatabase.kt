@@ -17,9 +17,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ChatSessionEntity::class,
         ChatMessageEntity::class,
         ContextEventEntity::class,
-        ContextSnapshotEntity::class
+        ContextSnapshotEntity::class,
+        CommitmentEntity::class,
+        DailyInsightEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class OpenGranolaDatabase : RoomDatabase() {
@@ -35,7 +37,7 @@ abstract class OpenGranolaDatabase : RoomDatabase() {
                 context.applicationContext,
                 OpenGranolaDatabase::class.java,
                 "open_granola.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -53,6 +55,13 @@ abstract class OpenGranolaDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS chat_messages (id TEXT NOT NULL PRIMARY KEY, sessionId TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, createdAt INTEGER NOT NULL)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS context_events (id TEXT NOT NULL PRIMARY KEY, source TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, timestamp INTEGER NOT NULL, importance REAL NOT NULL)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS context_snapshots (id TEXT NOT NULL PRIMARY KEY, purpose TEXT NOT NULL, renderedContext TEXT NOT NULL, sourceIds TEXT NOT NULL, createdAt INTEGER NOT NULL)")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS commitments (id TEXT NOT NULL PRIMARY KEY, meetingId TEXT NOT NULL, sourceTitle TEXT NOT NULL, title TEXT NOT NULL, owner TEXT NOT NULL, dueText TEXT NOT NULL, evidence TEXT NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS daily_insights (date TEXT NOT NULL PRIMARY KEY, briefing TEXT NOT NULL, contextSnapshotId TEXT NOT NULL, feedback INTEGER NOT NULL, createdAt INTEGER NOT NULL)")
             }
         }
     }
