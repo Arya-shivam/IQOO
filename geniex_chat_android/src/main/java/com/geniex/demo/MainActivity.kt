@@ -30,8 +30,8 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.AdapterView
 import android.widget.Button
-import android.widget.EditText
-import android.widget.HorizontalScrollView
+import android.view.Gravity
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -105,6 +105,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var btnClearHistory: Button
     private lateinit var btnSend: Button
     private lateinit var btnModelSettings: Button
+    private var sidebar: LinearLayout? = null
     private lateinit var btnAddImage: Button
 
     private lateinit var recyclerView: RecyclerView
@@ -220,7 +221,8 @@ class MainActivity : FragmentActivity() {
         etInput = findViewById(R.id.et_input)
         btnAddImage = findViewById(R.id.btn_add_image)
         btnModelSettings = findViewById(R.id.btn_model_settings)
-        btnModelSettings.setOnClickListener { showModelSettings() }
+        btnModelSettings.text = "☰ Menu"
+        btnModelSettings.setOnClickListener { toggleSidebar() }
 
         btnSend = findViewById(R.id.btn_send)
         btnSend.isEnabled = false
@@ -410,6 +412,49 @@ class MainActivity : FragmentActivity() {
         inputMethodManager.hideSoftInputFromWindow(view.windowToken, 0)
     }
 
+    private fun toggleSidebar() {
+        sidebar?.let {
+            (it.parent as? android.view.ViewGroup)?.removeView(it)
+            sidebar = null
+            return
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(36, 48, 24, 24)
+            setBackgroundColor(Color.WHITE)
+            elevation = 24f
+        }
+        fun menuButton(label: String, action: () -> Unit) = Button(this).apply {
+            text = label
+            textSize = 16f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setAllCaps(false)
+            setOnClickListener { action() }
+        }
+        panel.addView(TextView(this).apply {
+            text = "Journal"
+            textSize = 26f
+            setTextColor(Color.rgb(25, 25, 25))
+            setPadding(0, 0, 0, 40)
+        })
+        panel.addView(menuButton("Journal") { toggleSidebar() })
+        panel.addView(menuButton("Model Settings") {
+            toggleSidebar()
+            showModelSettings()
+        })
+        panel.addView(menuButton("Weekly Reflection") {
+            toggleSidebar()
+            btnContextPlan.performClick()
+        })
+        panel.addView(menuButton("Close") { toggleSidebar() })
+        findViewById<android.view.ViewGroup>(android.R.id.content).addView(
+            panel,
+            FrameLayout.LayoutParams(360, FrameLayout.LayoutParams.MATCH_PARENT).apply {
+                gravity = Gravity.START
+            },
+        )
+        sidebar = panel
+    }
     private fun showModelSettings() {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
