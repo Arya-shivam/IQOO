@@ -59,6 +59,7 @@ import com.opengranola.android.calendar.CalendarRepository
 import com.opengranola.android.ai.GenieXLocalLlmProvider
 import com.opengranola.android.ai.LocalModelStore
 import com.opengranola.android.model.Meeting
+import com.opengranola.android.memory.ContextMemoryStore
 import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
 import com.opengranola.android.recording.LiveTranscriber
@@ -89,6 +90,8 @@ class MainActivity : ComponentActivity() {
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
         val modelStore = remember { LocalModelStore(this@MainActivity) }
         val syncStore = remember { SyncStore(this@MainActivity) }
+        val memoryStore = remember { ContextMemoryStore(this@MainActivity) }
+        var memoryRevision by remember { mutableIntStateOf(0) }
         var selectedModel by remember { mutableStateOf(modelStore.selected()?.name) }
         var syncStatus by remember { mutableStateOf(syncStore.status()) }
         var showSyncSetup by remember { mutableStateOf(false) }
@@ -172,6 +175,8 @@ class MainActivity : ComponentActivity() {
                             syncStatus = syncStatus.copy(label = "Sync queued")
                         },
                         onSyncSetup = { showSyncSetup = true },
+                        memoryStore = memoryStore,
+                        onMemoryChanged = { memoryRevision++ },
                         onOpen = { selectedId = it.id },
                         onNew = {
                             val meeting = Meeting(title = "New meeting")
@@ -271,6 +276,8 @@ private fun AssistantDashboard(
     syncStatus: SyncStatus,
     onSyncNow: () -> Unit,
     onSyncSetup: () -> Unit,
+    memoryStore: ContextMemoryStore,
+    onMemoryChanged: () -> Unit,
     onOpen: (Meeting) -> Unit,
     onNew: () -> Unit
 ) {
@@ -398,6 +405,20 @@ private fun AssistantDashboard(
             } else if (tab == 1) {
                 Text("MEMORY", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 Text("A quiet record of what matters", style = MaterialTheme.typography.headlineSmall)
+                var taskTitle by remember { mutableStateOf("") }
+                OutlinedTextField(
+                    value = taskTitle,
+                    onValueChange = { taskTitle = it },
+                    label = { Text("Add a task") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = { memoryStore.addTask(taskTitle); taskTitle = ""; onMemoryChanged() },
+                    enabled = taskTitle.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Add task") }
+                Text(memoryStore.planText(), style = MaterialTheme.typography.bodyMedium)
                 Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) { Text("Add memory") }
                 meetings.forEach { meeting ->
                     Card(onClick = { onOpen(meeting) }, modifier = Modifier.fillMaxWidth()) {
