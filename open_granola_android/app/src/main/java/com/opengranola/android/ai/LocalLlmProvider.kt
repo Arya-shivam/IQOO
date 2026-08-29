@@ -12,12 +12,27 @@ import com.geniex.sdk.bean.RuntimeIdValue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 
 /** Stable boundary for local inference. GenieX is wired behind this interface. */
 interface LocalLlmProvider {
     val name: String
     suspend fun summarize(transcript: String, userNotes: String, context: String = ""): String
+    suspend fun chat(message: String, context: String, history: List<AssistantTurn>): InferenceResult
+    suspend fun generatePlan(objective: String, context: String): GeneratedPlan
 }
+
+data class AssistantTurn(val role: String, val content: String)
+data class GeneratedTask(val title: String, val details: String, val priority: Int)
+data class GeneratedPlan(val title: String, val objective: String, val tasks: List<GeneratedTask>)
+data class InferenceStats(
+    val promptTokens: Int,
+    val generatedTokens: Int,
+    val computeUnit: String,
+    val prefillTokensPerSecond: Double,
+    val decodeTokensPerSecond: Double
+) { val totalTokens: Int get() = promptTokens + generatedTokens }
+data class InferenceResult(val text: String, val stats: InferenceStats)
 
 class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     override val name: String = "GenieX (on-device)"
@@ -28,46 +43,114 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     private val inferenceLock = Mutex()
     private var llm: LlmWrapper? = null
     private var initialized: CompletableDeferred<Result<Unit>>? = null
+    private var managedModel: ManagedModel? = null
+
+    fun useManagedModel(model: ManagedModel) {
+        managedModel = model
+        llm = null
+    }
 
     override suspend fun summarize(transcript: String, userNotes: String, context: String): String {
-        return inferenceLock.withLock {
-            val activeLlm = ensureLlm()
-            val prompt = """
-                You are a private meeting assistant. Summarize the transcript faithfully.
-                Return these sections: Overview, Decisions, Action items, Open questions.
-                Do not invent details. If a section has no evidence, write “None noted”.
-                User notes: $userNotes
-                Optional phone context (treat as background only; do not invent connections): $context
+        val prompt = """
+            You are pa, a private on-device meeting assistant. Summarize faithfully.
+            Return: Overview, Decisions, Action items, Open questions.
+            Do not invent details. If a section has no evidence, write “None noted”.
+            User notes: $userNotes
 
-                Transcript:
-                $transcript
-            """.trimIndent()
-            // Match the Geniex demo flow: let the selected model format the
-            // conversation instead of hand-building a model-specific prompt.
-            val formattedPrompt = activeLlm.applyChatTemplate(
-                arrayOf(ChatMessage("user", prompt)),
-                null,
-                false,
-                false
-            ).getOrThrow().formattedText
-            val output = StringBuilder()
-            val config = GenerationConfig().apply { maxTokens = 2048 }
-            activeLlm.generateStreamFlow(formattedPrompt, config).collect { event ->
-                when (event) {
-                    is LlmStreamResult.Token -> output.append(event.text)
-                    is LlmStreamResult.Completed -> Unit
-                    is LlmStreamResult.Error -> throw event.throwable
+            Transcript:
+            $transcript
+        """.trimIndent()
+        return generate(arrayOf(ChatMessage("user", prompt)), 2048).text
+    }
+
+    override suspend fun chat(message: String, context: String, history: List<AssistantTurn>): InferenceResult {
+        val messages = history.takeLast(8).map { ChatMessage(it.role, it.content) }.toMutableList()
+        messages += ChatMessage("user", """
+            You are pa, a private local personal assistant. Use only relevant context below.
+            Be concise, acknowledge uncertainty, and never claim an action was executed.
+
+            LOCAL CONTEXT:
+            $context
+
+            USER MESSAGE:
+            $message
+        """.trimIndent())
+        return generate(messages.toTypedArray(), 1536)
+    }
+
+    override suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
+        val raw = generate(arrayOf(ChatMessage("user", """
+            You are pa. Create a practical plan using relevant local context.
+            Return only JSON with this shape:
+            {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1}]}
+            Use 3-7 concrete tasks. Priority 1 is highest. Do not include markdown fences.
+
+            Objective: $objective
+            Local context: $context
+        """.trimIndent())), 1536).text
+        return parsePlan(raw, objective)
+    }
+
+    private suspend fun generate(messages: Array<ChatMessage>, maxTokens: Int): InferenceResult = inferenceLock.withLock {
+        val activeLlm = ensureLlm()
+        val formatted = activeLlm.applyChatTemplate(messages, null, false, false).getOrThrow().formattedText
+        val output = StringBuilder()
+        var promptTokens = 0
+        var generatedTokens = 0
+        var prefillSpeed = 0.0
+        var decodeSpeed = 0.0
+        activeLlm.generateStreamFlow(formatted, GenerationConfig().apply { this.maxTokens = maxTokens }).collect { event ->
+            when (event) {
+                is LlmStreamResult.Token -> output.append(event.text)
+                is LlmStreamResult.Completed -> {
+                    promptTokens = event.profile.promptTokens.toInt()
+                    generatedTokens = event.profile.generatedTokens.toInt()
+                    prefillSpeed = event.profile.prefillSpeed.toDouble()
+                    decodeSpeed = event.profile.decodingSpeed.toDouble()
                 }
+                is LlmStreamResult.Error -> throw event.throwable
             }
-            output.toString().trim().ifBlank { error("GenieX returned an empty summary") }
+        }
+        val text = sanitizeModelOutput(output.toString())
+            .ifBlank { error("GenieX returned an empty response") }
+        InferenceResult(text, InferenceStats(promptTokens, generatedTokens, managedModel?.computeUnit ?: "cpu", prefillSpeed, decodeSpeed))
+    }
+
+    /**
+     * Some reasoning-capable chat templates emit thinking delimiters even when
+     * thinking is disabled. Keep those implementation tokens out of every UI
+     * consumer (chat, summaries, and JSON plan parsing).
+     */
+    private fun sanitizeModelOutput(raw: String): String {
+        return raw
+            .replace(THINK_BLOCK, "")
+            .replace(LEADING_THINK_CLOSE, "")
+            .replace(SPECIAL_TOKEN, "")
+            .replace(LEADING_ROLE_PREFIX, "")
+            .trim()
+    }
+
+    private fun parsePlan(raw: String, objective: String): GeneratedPlan {
+        val jsonText = raw.substringAfter('{', "").let { if (it.isBlank()) "" else "{$it" }.substringBeforeLast('}', "").let { if (it.isBlank()) "" else "$it}" }
+        return runCatching {
+            val json = JSONObject(jsonText)
+            val array = json.getJSONArray("tasks")
+            val tasks = (0 until array.length()).map { index ->
+                val task = array.getJSONObject(index)
+                GeneratedTask(task.getString("title"), task.optString("details"), task.optInt("priority", index + 1))
+            }
+            GeneratedPlan(json.optString("title", "Plan"), json.optString("objective", objective), tasks)
+        }.getOrElse {
+            GeneratedPlan("Plan for ${objective.take(48)}", objective, listOf(GeneratedTask("Review the generated plan", raw.take(1200), 1)))
         }
     }
 
     private suspend fun ensureLlm(): LlmWrapper {
         llm?.let { return it }
+        val managed = managedModel
         val model = modelStore.selected()
-            ?: error("Load a GenieX-compatible local model before generating notes")
-        check(model.length() > 0) { "Selected model file is empty" }
+        check(managed != null || model != null) { "Load a GenieX-compatible local model before generating notes" }
+        if (managed == null) check(model!!.length() > 0) { "Selected model file is empty" }
 
         val initResult = initialized ?: CompletableDeferred<Result<Unit>>().also { deferred ->
             initialized = deferred
@@ -77,27 +160,48 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             })
         }
         initResult.await().getOrThrow()
-        // Use a conservative CPU configuration. The phone's bundled ggml backend
-        // was faulting in its parallel Q4 dispatch path inside an OpenMP worker.
+        val computeUnit = managed?.computeUnit ?: "cpu"
         val modelConfig = ModelConfig().apply {
             nCtx = 2048
-            nThreads = 1
-            nThreadsBatch = 1
+            nThreads = if (computeUnit == "cpu") 4 else 2
+            nThreadsBatch = if (computeUnit == "cpu") 4 else 2
             nBatch = 256
             nUBatch = 128
             nSeqMax = 1
-            nGpuLayers = 0
+            nGpuLayers = when (computeUnit) {
+                "npu" -> 999
+                "gpu" -> 999
+                else -> 0
+            }
         }
         val input = LlmCreateInput(
-            model.name,
-            model.absolutePath,
-            null,
+            managed?.name ?: model!!.name,
+            managed?.path ?: model!!.absolutePath,
+            managed?.tokenizerPath,
             modelConfig,
-            RuntimeIdValue.LLAMA_CPP.value,
-            "cpu"
+            managed?.runtimeId ?: RuntimeIdValue.LLAMA_CPP.value,
+            computeUnit
         )
         val created = LlmWrapper.builder().llmCreateInput(input).build().getOrThrow()
         llm = created
         return created
     }
+
+    private companion object {
+        val THINK_BLOCK = Regex("<think>.*?</think>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        val LEADING_THINK_CLOSE = Regex("^\\s*</think>\\s*", RegexOption.IGNORE_CASE)
+        val SPECIAL_TOKEN = Regex("<\\|[^>]+\\|>|\\[/?INST\\]", RegexOption.IGNORE_CASE)
+        val LEADING_ROLE_PREFIX = Regex(
+            "^\\s*(?:#{1,6}\\s*)?(?:assistant|model|system|user|pa)\\b(?:\\s*[:\\-]\\s*|\\s*\\n+|\\s+)",
+            RegexOption.IGNORE_CASE
+        )
+    }
 }
+
+data class ManagedModel(
+    val name: String,
+    val path: String,
+    val tokenizerPath: String?,
+    val runtimeId: String,
+    val computeUnit: String
+)
