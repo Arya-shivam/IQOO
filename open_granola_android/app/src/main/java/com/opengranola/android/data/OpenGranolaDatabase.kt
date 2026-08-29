@@ -4,10 +4,13 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [MeetingEntity::class], version = 1, exportSchema = false)
+@Database(entities = [MeetingEntity::class, NotificationEntity::class], version = 2, exportSchema = false)
 abstract class OpenGranolaDatabase : RoomDatabase() {
     abstract fun meetingDao(): MeetingDao
+    abstract fun notificationDao(): NotificationDao
 
     companion object {
         @Volatile private var instance: OpenGranolaDatabase? = null
@@ -17,7 +20,13 @@ abstract class OpenGranolaDatabase : RoomDatabase() {
                 context.applicationContext,
                 OpenGranolaDatabase::class.java,
                 "open_granola.db"
-            ).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+        }
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS notifications (id TEXT NOT NULL PRIMARY KEY, packageName TEXT NOT NULL, appLabel TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, postedAt INTEGER NOT NULL)")
+            }
         }
     }
 }

@@ -47,9 +47,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.opengranola.android.ai.GenieXLocalLlmProvider
 import com.opengranola.android.ai.LocalModelStore
@@ -62,6 +65,7 @@ import kotlinx.coroutines.withContext
 import com.opengranola.android.usage.AppUsage
 import com.opengranola.android.usage.UsageSnapshot
 import com.opengranola.android.usage.UsageStatsRepository
+import com.opengranola.android.data.NotificationEntity
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,6 +79,8 @@ class MainActivity : ComponentActivity() {
     private fun OpenGranolaApp() {
         val viewModel: MeetingViewModel = viewModel()
         val meetings by viewModel.meetings.collectAsState()
+        val recentNotifications by viewModel.recentNotifications.collectAsState()
+        val notificationsToday by viewModel.notificationsToday.collectAsState()
         var selectedId by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
@@ -125,13 +131,24 @@ class MainActivity : ComponentActivity() {
                 if (selected == null) {
                     var usage by remember { mutableStateOf(UsageSnapshot()) }
                     var usageRefresh by remember { mutableIntStateOf(0) }
+                    var notificationAccessEnabled by remember {
+                        mutableStateOf(NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName))
+                    }
+                    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                        notificationAccessEnabled = NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName)
+                        usageRefresh++
+                    }
                     LaunchedEffect(usageRefresh) {
                         withContext(Dispatchers.IO) { usage = UsageStatsRepository(this@MainActivity).today() }
                     }
                     AssistantDashboard(
                         meetings = meetings,
                         usage = usage,
+                        recentNotifications = recentNotifications,
+                        notificationsToday = notificationsToday,
+                        notificationAccessEnabled = notificationAccessEnabled,
                         onUsagePermission = { startActivity(UsageStatsRepository(this@MainActivity).settingsIntent()) },
+                        onNotificationPermission = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
                         onRefreshUsage = { usageRefresh++ },
                         onOpen = { selectedId = it.id },
                         onNew = {
@@ -179,7 +196,7 @@ class MainActivity : ComponentActivity() {
                             summaryState = "Summarizing locally…"
                             scope.launch {
                                 runCatching {
-                                    summarizeLongMeeting(llm, completed.transcript, completed.notes) { summaryState = it }
+                                    summarizeLongMeeting(llm, completed.transcript, completed.notes, notificationContext(recentNotifications)) { summaryState = it }
                                 }.onSuccess { summary ->
                                     viewModel.save(completed.copy(notes = summary))
                                     summaryState = "Summary ready"
@@ -192,7 +209,7 @@ class MainActivity : ComponentActivity() {
                             scope.launch {
                                 summaryState = "Starting local model…"
                                 runCatching {
-                                    summarizeLongMeeting(llm, meeting.transcript, meeting.notes) { summaryState = it }
+                                    summarizeLongMeeting(llm, meeting.transcript, meeting.notes, notificationContext(recentNotifications)) { summaryState = it }
                                 }.onSuccess { generated ->
                                     viewModel.save(meeting.copy(notes = generated))
                                     summaryState = "Summary ready"
@@ -212,7 +229,11 @@ class MainActivity : ComponentActivity() {
 private fun AssistantDashboard(
     meetings: List<Meeting>,
     usage: UsageSnapshot,
+    recentNotifications: List<NotificationEntity>,
+    notificationsToday: Int,
+    notificationAccessEnabled: Boolean,
     onUsagePermission: () -> Unit,
+    onNotificationPermission: () -> Unit,
     onRefreshUsage: () -> Unit,
     onOpen: (Meeting) -> Unit,
     onNew: () -> Unit
@@ -275,7 +296,7 @@ private fun AssistantDashboard(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatCard("FOCUS", if (usage.hasPermission) formatMinutes((usage.totalMinutes * .36f).toInt()) else "—", "estimated", Modifier.weight(1f))
                     StatCard("APPS USED", if (usage.hasPermission) usage.pickups.toString() else "—", "today", Modifier.weight(1f))
-                    StatCard("MEMORY", meetings.size.toString(), "saved notes", Modifier.weight(1f))
+                    StatCard("ALERTS", notificationsToday.toString(), "today", Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Most used today", style = MaterialTheme.typography.titleLarge)
@@ -285,6 +306,25 @@ private fun AssistantDashboard(
                     Text("Your app patterns will appear here once Usage Access is enabled.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     usage.apps.forEach { UsageRow(it) }
+                }
+                Text("Recent signals", style = MaterialTheme.typography.titleLarge)
+                if (!notificationAccessEnabled) {
+                    Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer), onClick = onNotificationPermission) {
+                        Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("✦", style = MaterialTheme.typography.titleLarge)
+                            Column(Modifier.weight(1f)) {
+                                Text("Connect notifications", style = MaterialTheme.typography.titleMedium)
+                                Text("Read-only, redacted notification context helps your assistant understand what needs attention.", color = MaterialTheme.colorScheme.onSecondaryContainer, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text("Enable", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                } else if (recentNotifications.isEmpty()) {
+                    Text("No notification signals captured yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    recentNotifications.take(3).forEach { notification ->
+                        NotificationRow(notification)
+                    }
                 }
                 Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -331,6 +371,19 @@ private fun UsageRow(app: AppUsage) {
 }
 
 @androidx.compose.runtime.Composable
+private fun NotificationRow(notification: NotificationEntity) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = MaterialTheme.shapes.small, modifier = Modifier.size(38.dp)) {
+            Text(notification.appLabel.take(1).uppercase(), modifier = Modifier.padding(10.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(notification.title, style = MaterialTheme.typography.titleSmall)
+            if (notification.body.isNotBlank()) Text(notification.body, maxLines = 2, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
 private fun PlanRow(title: String, detail: String, done: Boolean) {
     Card(modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) { Text(if (done) "✓" else "○", color = if (done) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleLarge); Column { Text(title, style = MaterialTheme.typography.titleMedium); Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
 }
@@ -342,15 +395,16 @@ private suspend fun summarizeLongMeeting(
     provider: com.opengranola.android.ai.LocalLlmProvider,
     transcript: String,
     userNotes: String,
+    phoneContext: String = "",
     onProgress: (String) -> Unit = {}
 ): String {
-    if (transcript.isBlank()) return provider.summarize(transcript, userNotes)
+    if (transcript.isBlank()) return provider.summarize(transcript, userNotes, phoneContext)
 
     val chunks = transcript.chunked(8_000)
     val summaries = mutableListOf<String>()
     for (index in chunks.indices) {
         onProgress("Summarizing section ${index + 1} of ${chunks.size}…")
-        summaries += provider.summarize(chunks[index], "Meeting section ${index + 1} of ${chunks.size}. $userNotes")
+        summaries += provider.summarize(chunks[index], "Meeting section ${index + 1} of ${chunks.size}. $userNotes", phoneContext)
     }
     var combined = summaries.joinToString("\n\n") { it.trim() }
     while (combined.length > 8_000) {
@@ -358,13 +412,16 @@ private suspend fun summarizeLongMeeting(
         val groups = combined.chunked(8_000)
         for ((index, group) in groups.withIndex()) {
             onProgress("Combining summary pass · section ${index + 1} of ${groups.size}…")
-            reduced += provider.summarize(group, "Combine these meeting section summaries into a faithful summary. $userNotes")
+            reduced += provider.summarize(group, "Combine these meeting section summaries into a faithful summary. $userNotes", phoneContext)
         }
         combined = reduced.joinToString("\n\n")
     }
     onProgress("Writing final summary…")
-    return provider.summarize(combined, "Create the final meeting summary with decisions, action items, and open questions. $userNotes")
+    return provider.summarize(combined, "Create the final meeting summary with decisions, action items, and open questions. $userNotes", phoneContext)
 }
+
+private fun notificationContext(notifications: List<NotificationEntity>): String =
+    notifications.take(5).joinToString("\n") { "${it.appLabel}: ${it.title}. ${it.body}" }
 
 @androidx.compose.runtime.Composable
 private fun MeetingList(meetings: List<Meeting>, onOpen: (Meeting) -> Unit, onNew: () -> Unit) {

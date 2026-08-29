@@ -16,7 +16,7 @@ import kotlinx.coroutines.sync.withLock
 /** Stable boundary for local inference. GenieX is wired behind this interface. */
 interface LocalLlmProvider {
     val name: String
-    suspend fun summarize(transcript: String, userNotes: String): String
+    suspend fun summarize(transcript: String, userNotes: String, context: String = ""): String
 }
 
 class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
@@ -29,7 +29,7 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     private var llm: LlmWrapper? = null
     private var initialized: CompletableDeferred<Result<Unit>>? = null
 
-    override suspend fun summarize(transcript: String, userNotes: String): String {
+    override suspend fun summarize(transcript: String, userNotes: String, context: String): String {
         return inferenceLock.withLock {
             val activeLlm = ensureLlm()
             val prompt = """
@@ -37,6 +37,7 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
                 Return these sections: Overview, Decisions, Action items, Open questions.
                 Do not invent details. If a section has no evidence, write “None noted”.
                 User notes: $userNotes
+                Optional phone context (treat as background only; do not invent connections): $context
 
                 Transcript:
                 $transcript
