@@ -12,7 +12,7 @@ interface MeetingDao {
     fun observeAll(): Flow<List<MeetingEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun save(meeting: MeetingEntity)
+    suspend fun save(meeting: MeetingEntity): Long
 
     @Query("DELETE FROM meetings WHERE id = :id")
     suspend fun delete(id: String)

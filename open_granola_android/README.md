@@ -9,14 +9,14 @@ the existing `geniex_chat_android` GenieX demo in this repository.
 - Meeting list and editor
 - Microphone permission and foreground recording service with local `.m4a` capture
 - Room database schema and DAO for durable meeting records
-- Local LLM provider boundary with GenieX provider
+- Local GenieX LLM provider with chat-template formatting and streamed summaries
 - Transcript and note fields ready for local STT/LLM pipelines
 - No cloud account or network API in the application flow
 
-The current `GenieXLocalLlmProvider` is deliberately an integration seam: the
-GenieX Android dependency is included, while model discovery/loading and
-generation should be wired to the exact GenieX SDK API for the target SDK
-release. This keeps the UI testable without hard-coding JNI details into it.
+`GenieXLocalLlmProvider` initializes the SDK once, loads the privately imported
+model with the same `LlmWrapper` flow used by the companion GenieX app, applies
+the model chat template, and streams structured meeting notes locally. Inference
+is serialized because the native wrapper is not re-entrant.
 
 ## Build
 
@@ -51,7 +51,7 @@ different local provider implementation.
 ## Roadmap
 
 1. Add on-device Whisper transcription and connect transcript persistence to the Room DAO.
-2. Wire GenieX model management and structured JSON note generation.
+2. Add GenieX model-manager downloads and structured JSON note generation.
 3. Connect the Compose screens to Room-backed `MeetingViewModel` state.
 4. Add Markdown export, search, retention controls, and encrypted storage.
 5. Add device capability detection and non-Qualcomm local-runtime fallback.
