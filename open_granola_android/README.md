@@ -39,6 +39,10 @@ No API key is needed for Gmail or GitHub. The Gmail refresh token and GitHub
 token are required; Gmail client ID/secret are only used to refresh the Gmail
 access token.
 
+Calendar uses Android's local calendar provider. Grant Calendar access in the
+app; it needs no additional token or API key and reads the next 14 days of
+events into the same local assistant context.
+
 `GenieXLocalLlmProvider` initializes the SDK once, loads the privately imported
 model with the same `LlmWrapper` flow used by the companion GenieX app, applies
 the model chat template, and streams structured meeting notes locally. Inference

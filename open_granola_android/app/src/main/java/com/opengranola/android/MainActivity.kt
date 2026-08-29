@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
+import com.opengranola.android.calendar.CalendarRepository
 import com.opengranola.android.ai.GenieXLocalLlmProvider
 import com.opengranola.android.ai.LocalModelStore
 import com.opengranola.android.model.Meeting
@@ -91,6 +92,7 @@ class MainActivity : ComponentActivity() {
         var selectedModel by remember { mutableStateOf(modelStore.selected()?.name) }
         var syncStatus by remember { mutableStateOf(syncStore.status()) }
         var showSyncSetup by remember { mutableStateOf(false) }
+        var calendarAccess by remember { mutableStateOf(CalendarRepository.isEnabled(this@MainActivity)) }
         var notificationAccess by remember {
             mutableStateOf(NotificationReadService.isEnabled(this@MainActivity))
         }
@@ -110,6 +112,7 @@ class MainActivity : ComponentActivity() {
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
             notificationAccess = NotificationReadService.isEnabled(this@MainActivity)
             syncStatus = syncStore.status()
+            calendarAccess = CalendarRepository.isEnabled(this@MainActivity)
         }
         val modelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
@@ -127,6 +130,9 @@ class MainActivity : ComponentActivity() {
             }
         }
         val selected = meetings.firstOrNull { it.id == selectedId }
+        val calendarPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted -> calendarAccess = granted }
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { granted ->
@@ -153,6 +159,13 @@ class MainActivity : ComponentActivity() {
                         onRefreshUsage = { usageRefresh++ },
                         notificationAccess = notificationAccess,
                         onNotificationAccess = { NotificationReadService.openSettings(this@MainActivity) },
+                        calendarAccess = calendarAccess,
+                        onCalendarAccess = {
+                            if (calendarAccess) {
+                                SyncScheduler.syncNow(this@MainActivity)
+                                syncStatus = syncStatus.copy(label = "Sync queued")
+                            } else calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR)
+                        },
                         syncStatus = syncStatus,
                         onSyncNow = {
                             SyncScheduler.syncNow(this@MainActivity)
@@ -253,6 +266,8 @@ private fun AssistantDashboard(
     onRefreshUsage: () -> Unit,
     notificationAccess: Boolean,
     onNotificationAccess: () -> Unit,
+    calendarAccess: Boolean,
+    onCalendarAccess: () -> Unit,
     syncStatus: SyncStatus,
     onSyncNow: () -> Unit,
     onSyncSetup: () -> Unit,
@@ -346,6 +361,17 @@ private fun AssistantDashboard(
                             TextButton(onClick = onSyncSetup) { Text("Setup") }
                         }
                         Text("Runs automatically about twice a day when online.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Card(onClick = onCalendarAccess) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(if (calendarAccess) "Calendar context is on" else "Turn on calendar context", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (calendarAccess) "Upcoming events help the assistant understand available time."
+                            else "Allow read access to use upcoming events locally.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {

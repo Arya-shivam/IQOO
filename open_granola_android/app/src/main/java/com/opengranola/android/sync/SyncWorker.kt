@@ -14,6 +14,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.opengranola.android.calendar.CalendarRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -55,7 +56,7 @@ class SyncStore(context: Context) {
         lastSync = prefs.getLong("last_sync", 0L),
         itemCount = prefs.getInt("item_count", 0)
     )
-    fun setStatus(label: String, count: Int = context().length()) = prefs.edit()
+    fun setStatus(label: String, count: Int = runCatching { JSONArray(context().ifBlank { "[]" }).length() }.getOrDefault(0)) = prefs.edit()
         .putString("status", label).putLong("last_sync", System.currentTimeMillis()).putInt("item_count", count).apply()
     fun gmailHistoryId(): String? = prefs.getString("gmail_history_id", null)
     fun setGmailHistoryId(value: String) = prefs.edit().putString("gmail_history_id", value).apply()
@@ -126,12 +127,13 @@ object SyncScheduler {
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val store = SyncStore(applicationContext)
-        if (!store.configured()) return@withContext Result.success()
+        if (!store.configured() && !CalendarRepository.isEnabled(applicationContext)) return@withContext Result.success()
         store.setStatus("Syncing…")
         runCatching {
             val items = buildList {
                 if (store.gmailReady()) addAll(syncGmail(store))
                 if (store.githubReady()) addAll(syncGithub(store))
+                addAll(CalendarRepository.readUpcoming(applicationContext))
             }
             store.appendContext(items)
             store.setStatus("Synced ${items.size} new item${if (items.size == 1) "" else "s"}")
