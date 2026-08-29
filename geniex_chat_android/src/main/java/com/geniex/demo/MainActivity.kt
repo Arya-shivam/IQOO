@@ -102,8 +102,8 @@ class MainActivity : FragmentActivity() {
     private lateinit var btnUnloadModel: Button
     private lateinit var btnStop: Button
     private lateinit var etInput: EditText
+    private lateinit var btnClearHistory: Button
     private lateinit var btnSend: Button
-    private lateinit var btnModelSettings: Button
     private lateinit var btnAddImage: Button
 
     private lateinit var recyclerView: RecyclerView
