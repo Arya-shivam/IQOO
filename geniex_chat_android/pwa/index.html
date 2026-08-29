@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><div><p class="eyebrow">PRIVATE · ON DEVICE</p><h1>Journal</h1></div><button id="settingsButton" class="icon-button" aria-label="Open settings">⚙</button></header>
+    <section class="hero"><p class="eyebrow">QUICK CAPTURE</p><h2>What is on your mind?</h2><textarea id="entryText" placeholder="Write freely. No structure needed."></textarea><button id="saveButton" class="primary">Save entry</button><p id="saveStatus" class="status"></p></section>
+    <section class="section-head"><div><p class="eyebrow">RECENT</p><h2>Your entries</h2></div><button id="refreshButton" class="text-button">Refresh</button></section>
+    <section id="entries" class="entries"><p class="empty">Loading entries…</p></section>
+    <section class="reflection"><div class="section-head"><div><p class="eyebrow">REFLECTION</p><h2>This week</h2></div><button id="reflectionButton" class="secondary">Generate</button></div><pre id="summary">Loading summary…</pre></section>
+  </main>
+  <dialog id="settingsDialog"><form method="dialog" class="settings"><div class="section-head"><div><p class="eyebrow">CONNECTION</p><h2>Local model</h2></div><button class="icon-button">×</button></div><label>Android bridge URL<input id="apiUrl" value="http://127.0.0.1:8080"></label><p class="hint">Use the phone's LAN IP when opening this PWA on another device.</p><div class="model-state"><span class="dot"></span><span id="modelState">Checking local bridge…</span></div><button id="saveSettings" class="primary">Save settings</button></form></dialog>
+</body>
+</html>
