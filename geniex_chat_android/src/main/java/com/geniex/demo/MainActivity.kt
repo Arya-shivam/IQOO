@@ -81,6 +81,8 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
 import java.io.FileNotFoundException
@@ -119,16 +121,19 @@ class MainActivity : FragmentActivity() {
     private lateinit var llmWrapper: LlmWrapper
     private lateinit var vlmWrapper: VlmWrapper
     private val modelScope = CoroutineScope(Dispatchers.IO)
-    private val contextMemoryStore by lazy { ContextMemoryStore(this) }
+    private val journalStore by lazy { JournalStore(this) }
     private val apiServer = OpenAiServer(
         port = 8080,
         modelName = { selectModelId.ifEmpty { "geniex" } },
         isModelLoaded = { hasLoadedModel() },
         deviceInfo = ::deviceInfo,
-        context = { contextMemoryStore.contextJson() },
-        addContext = { text -> saveContext(text) },
+        context = { journalStore.entriesJson() },
+        addContext = { text -> saveJournalEntry(text) },
         plan = ::generatePlanJson,
         complete = ::completeApiChat,
+        journalEntries = { category, date -> journalStore.entriesJson(category, date) },
+        journalSummary = { journalStore.weeklySummaryJson() },
+        journalReflection = ::generateWeeklyReflectionJson,
     )
     private val chatList = arrayListOf<ChatMessage>()
     private val vlmChatList = arrayListOf<VlmChatMessage>()
@@ -230,23 +235,41 @@ class MainActivity : FragmentActivity() {
         btnContextSave.setOnClickListener {
             val text = etContextInput.text.toString()
             if (text.isBlank()) {
-                Toast.makeText(this, "Add context first", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Type a journal entry first", Toast.LENGTH_SHORT).show()
+                etContextInput.requestFocus()
                 return@setOnClickListener
             }
-            saveContext(text)
-            etContextInput.setText("")
-            refreshContextDashboard()
-        }
-        btnContextPlan.setOnClickListener {
+            btnContextSave.isEnabled = false
             modelScope.launch {
-                val plan = generatePlanText()
+                val entry = runCatching { saveJournalEntry(text) }
                 runOnUiThread {
-                    tvContextDashboard.text = plan
-                    messages.add(Message(plan, MessageType.ASSISTANT))
-                    reloadRecycleView()
+                    entry.onSuccess {
+                        etContextInput.setText("")
+                        hideKeyboard(etContextInput)
+                        refreshContextDashboard()
+                        Toast.makeText(this@MainActivity, "Journal entry saved", Toast.LENGTH_SHORT).show()
+                    }.onFailure {
+                        Toast.makeText(this@MainActivity, "Save failed: ${it.message}", Toast.LENGTH_SHORT).show()
+                    }
+                    btnContextSave.isEnabled = true
                 }
             }
         }
+        btnContextPlan.setOnClickListener {
+            btnContextPlan.isEnabled = false
+            tvContextDashboard.text = "Preparing weekly reflection..."
+            modelScope.launch {
+                val reflection = runCatching { generateWeeklyReflectionText() }
+                runOnUiThread {
+                    val text = reflection.getOrElse { "Could not generate reflection: ${it.message}" }
+                    tvContextDashboard.text = text
+                    messages.add(Message(text, MessageType.ASSISTANT))
+                    reloadRecycleView()
+                    btnContextPlan.isEnabled = true
+                }
+            }
+        }
+        
 
 
         findViewById<Button>(R.id.btn_test).setOnClickListener {
@@ -341,39 +364,62 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun hasLoadedModel(): Boolean = isLoadLlmModel || isLoadVlmModel
-    private fun saveContext(text: String): JsonObject {
-        val saved = contextMemoryStore.addContext(text)
-        runOnUiThread { refreshContextDashboard() }
-        return saved
+    private suspend fun saveJournalEntry(text: String): JsonObject {
+        val lower = text.lowercase()
+        val tags = if (isLoadLlmModel) {
+            runCatching {
+                val raw = completeApiChat(listOf(ApiMessage("user", "Classify this journal entry. Return JSON only with category, sentiment, mode. category must be work, personal, health, learning, relationship, finance, or other. sentiment must be positive, neutral, negative, or mixed. mode must be actionable or reflective. Entry:\n$text")))
+                val root = Json.parseToJsonElement(raw).jsonObject
+                JournalTags(
+                    root["category"]?.jsonPrimitive?.content ?: "other",
+                    root["sentiment"]?.jsonPrimitive?.content ?: "neutral",
+                    root["mode"]?.jsonPrimitive?.content ?: "reflective",
+                )
+            }.getOrElse { heuristicTags(lower) }
+        } else heuristicTags(lower)
+        return journalStore.addEntry(text, tags).toJson()
+    }
+
+    private fun heuristicTags(text: String): JournalTags {
+        val category = when {
+            listOf("work", "project", "meeting", "code", "job").any(text::contains) -> "work"
+            listOf("health", "sleep", "gym", "exercise", "doctor").any(text::contains) -> "health"
+            listOf("learn", "study", "read", "course").any(text::contains) -> "learning"
+            listOf("money", "budget", "finance", "pay").any(text::contains) -> "finance"
+            listOf("friend", "family", "relationship").any(text::contains) -> "relationship"
+            else -> "personal"
+        }
+        val sentiment = when {
+            listOf("happy", "good", "excited", "grateful", "great").any(text::contains) -> "positive"
+            listOf("sad", "bad", "stress", "angry", "worried", "stuck").any(text::contains) -> "negative"
+            else -> "neutral"
+        }
+        val mode = if (listOf("need to", "should", "todo", "plan", "will ").any(text::contains)) "actionable" else "reflective"
+        return JournalTags(category, sentiment, mode)
     }
 
     private fun refreshContextDashboard() {
-        if (::tvContextDashboard.isInitialized) {
-            tvContextDashboard.text = contextMemoryStore.dashboardText()
-        }
+        if (::tvContextDashboard.isInitialized) tvContextDashboard.text = journalStore.dashboardText()
     }
 
-    private suspend fun generatePlanText(): String {
-        val context = contextMemoryStore.dashboardText()
-        return if (isLoadLlmModel) {
-            completeApiChat(
-                listOf(
-                    ApiMessage(
-                        "user",
-                        "You are my personal productivity assistant. Use this saved context to infer durable memory and produce a concise current plan. Sections: Memory, Priorities, Next actions. Context:\n$context",
-                    ),
-                ),
-            )
-        } else {
-            "Load a text model to generate an AI plan.\n\nCurrent context:\n$context"
-        }
+    private fun hideKeyboard(view: View) {
+        val inputMethodManager = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        inputMethodManager.hideSoftInputFromWindow(view.windowToken, 0)
     }
 
-    private suspend fun generatePlanJson(): JsonObject = buildJsonObject {
-        put("plan", generatePlanText())
+    private suspend fun generateWeeklyReflectionText(): String {
+        val summary = journalStore.weeklySummaryText()
+        return if (isLoadLlmModel) completeApiChat(listOf(ApiMessage("user", "Write a short practical weekly journal reflection from this deterministic aggregate. Do not invent events or claim unsupported patterns.\n$summary")))
+        else "$summary\n\nLoad a text model to generate the narrative reflection locally."
+    }
+
+    private suspend fun generateWeeklyReflectionJson(): JsonObject = buildJsonObject {
+        put("reflection", generateWeeklyReflectionText())
         put("model_loaded", isLoadLlmModel)
-        put("context", contextMemoryStore.contextJson())
+        put("summary", journalStore.weeklySummaryJson())
     }
+
+    private suspend fun generatePlanJson(): JsonObject = generateWeeklyReflectionJson()
 
     private fun deviceInfo(): JsonObject {
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
