@@ -3,6 +3,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <queries>
         <intent>
@@ -13,6 +14,7 @@
     <application
         android:allowBackup="true"
         android:label="Open Granola"
+        android:name=".OpenGranolaApplication"
         android:theme="@style/Theme.OpenGranola">
         <activity
             android:name=".MainActivity"

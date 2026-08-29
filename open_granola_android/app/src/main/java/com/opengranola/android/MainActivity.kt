@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -37,6 +38,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,6 +61,9 @@ import com.opengranola.android.model.Meeting
 import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
 import com.opengranola.android.recording.LiveTranscriber
+import com.opengranola.android.sync.SyncScheduler
+import com.opengranola.android.sync.SyncStatus
+import com.opengranola.android.sync.SyncStore
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -82,7 +87,10 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
         val modelStore = remember { LocalModelStore(this@MainActivity) }
+        val syncStore = remember { SyncStore(this@MainActivity) }
         var selectedModel by remember { mutableStateOf(modelStore.selected()?.name) }
+        var syncStatus by remember { mutableStateOf(syncStore.status()) }
+        var showSyncSetup by remember { mutableStateOf(false) }
         var notificationAccess by remember {
             mutableStateOf(NotificationReadService.isEnabled(this@MainActivity))
         }
@@ -101,6 +109,7 @@ class MainActivity : ComponentActivity() {
         DisposableEffect(Unit) { onDispose { transcriber.release() } }
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
             notificationAccess = NotificationReadService.isEnabled(this@MainActivity)
+            syncStatus = syncStore.status()
         }
         val modelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
@@ -144,6 +153,12 @@ class MainActivity : ComponentActivity() {
                         onRefreshUsage = { usageRefresh++ },
                         notificationAccess = notificationAccess,
                         onNotificationAccess = { NotificationReadService.openSettings(this@MainActivity) },
+                        syncStatus = syncStatus,
+                        onSyncNow = {
+                            SyncScheduler.syncNow(this@MainActivity)
+                            syncStatus = syncStatus.copy(label = "Sync queued")
+                        },
+                        onSyncSetup = { showSyncSetup = true },
                         onOpen = { selectedId = it.id },
                         onNew = {
                             val meeting = Meeting(title = "New meeting")
@@ -215,6 +230,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+            if (showSyncSetup) {
+                SyncSetupDialog(
+                    onDismiss = { showSyncSetup = false },
+                    onSave = { clientId, clientSecret, refreshToken, githubToken, repos ->
+                        syncStore.save(clientId, clientSecret, refreshToken, githubToken, repos)
+                        SyncScheduler.schedule(this@MainActivity)
+                        syncStatus = syncStore.status().copy(label = "Saved · ready to sync")
+                        showSyncSetup = false
+                    }
+                )
+            }
         }
     }
 }
@@ -227,6 +253,9 @@ private fun AssistantDashboard(
     onRefreshUsage: () -> Unit,
     notificationAccess: Boolean,
     onNotificationAccess: () -> Unit,
+    syncStatus: SyncStatus,
+    onSyncNow: () -> Unit,
+    onSyncSetup: () -> Unit,
     onOpen: (Meeting) -> Unit,
     onNew: () -> Unit
 ) {
@@ -304,6 +333,21 @@ private fun AssistantDashboard(
                         )
                     }
                 }
+                Card {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Email & GitHub context", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (syncStatus.lastSync == 0L) syncStatus.label else "${syncStatus.label} · ${syncStatus.itemCount} saved items",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = onSyncNow, enabled = syncStatus.label != "Not configured") { Text("Sync now") }
+                            TextButton(onClick = onSyncSetup) { Text("Setup") }
+                        }
+                        Text("Runs automatically about twice a day when online.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatCard("FOCUS", if (usage.hasPermission) formatMinutes((usage.totalMinutes * .36f).toInt()) else "—", "estimated", Modifier.weight(1f))
                     StatCard("APPS USED", if (usage.hasPermission) usage.pickups.toString() else "—", "today", Modifier.weight(1f))
@@ -347,6 +391,34 @@ private fun AssistantDashboard(
             }
         }
     }
+}
+
+@androidx.compose.runtime.Composable
+private fun SyncSetupDialog(
+    onDismiss: () -> Unit,
+    onSave: (String, String, String, String, String) -> Unit
+) {
+    var clientId by remember { mutableStateOf("") }
+    var clientSecret by remember { mutableStateOf("") }
+    var refreshToken by remember { mutableStateOf("") }
+    var githubToken by remember { mutableStateOf("") }
+    var repos by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sync setup") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Blank fields keep existing credentials.", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(clientId, { clientId = it }, label = { Text("Gmail OAuth client ID") }, singleLine = true)
+                OutlinedTextField(clientSecret, { clientSecret = it }, label = { Text("Gmail client secret") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(refreshToken, { refreshToken = it }, label = { Text("Gmail refresh token") }, minLines = 2, visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(githubToken, { githubToken = it }, label = { Text("GitHub fine-grained token") }, minLines = 2, visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(repos, { repos = it }, label = { Text("GitHub repos: owner/name") }, minLines = 2)
+            }
+        },
+        confirmButton = { Button(onClick = { onSave(clientId, clientSecret, refreshToken, githubToken, repos) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @androidx.compose.runtime.Composable
