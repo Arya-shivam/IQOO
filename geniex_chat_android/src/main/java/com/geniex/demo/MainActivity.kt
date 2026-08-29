@@ -103,7 +103,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var btnStop: Button
     private lateinit var etInput: EditText
     private lateinit var btnSend: Button
-    private lateinit var btnClearHistory: Button
+    private lateinit var btnModelSettings: Button
     private lateinit var btnAddImage: Button
 
     private lateinit var recyclerView: RecyclerView
@@ -218,6 +218,8 @@ class MainActivity : FragmentActivity() {
         btnStop = findViewById(R.id.btn_stop)
         etInput = findViewById(R.id.et_input)
         btnAddImage = findViewById(R.id.btn_add_image)
+        btnModelSettings = findViewById(R.id.btn_model_settings)
+        btnModelSettings.setOnClickListener { showModelSettings() }
 
         btnSend = findViewById(R.id.btn_send)
         btnSend.isEnabled = false
@@ -405,6 +407,39 @@ class MainActivity : FragmentActivity() {
     private fun hideKeyboard(view: View) {
         val inputMethodManager = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         inputMethodManager.hideSoftInputFromWindow(view.windowToken, 0)
+    }
+
+    private fun showModelSettings() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 8, 48, 8)
+        }
+        val status = TextView(this).apply {
+            textSize = 16f
+            setTextColor(Color.DKGRAY)
+            text = "Model: ${selectModelId.ifEmpty { "none selected" }}\nStatus: ${if (hasLoadedModel()) "Ready" else "Not loaded"}"
+        }
+        val hint = TextView(this).apply {
+            text = "All inference stays on this device. Journal capture works without a loaded model."
+            setPadding(0, 18, 0, 18)
+            setTextColor(Color.GRAY)
+        }
+        val download = Button(this).apply { text = "Download Model" }
+        val load = Button(this).apply { text = "Load Model" }
+        val unload = Button(this).apply { text = "Unload Model" }
+        download.setOnClickListener { btnDownload.performClick(); status.text = "Model: $selectModelId\nStatus: Downloading..." }
+        load.setOnClickListener { btnLoadModel.performClick(); status.text = "Model: $selectModelId\nStatus: Loading..." }
+        unload.setOnClickListener { btnUnloadModel.performClick(); status.text = "Model: $selectModelId\nStatus: Unloading..." }
+        panel.addView(status)
+        panel.addView(hint)
+        panel.addView(download)
+        panel.addView(load)
+        panel.addView(unload)
+        AlertDialog.Builder(this)
+            .setTitle("Local AI Model")
+            .setView(panel)
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     private suspend fun generateWeeklyReflectionText(): String {
