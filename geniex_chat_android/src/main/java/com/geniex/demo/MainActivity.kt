@@ -226,6 +226,8 @@ class MainActivity : FragmentActivity() {
         btnModelSettings.text = "☰ Menu"
         btnModelSettings.setOnClickListener { toggleSidebar() }
 
+        findViewById<com.google.android.material.appbar.MaterialToolbar>(R.id.journal_toolbar)
+            .setNavigationOnClickListener { toggleSidebar() }
         btnSend = findViewById(R.id.btn_send)
         btnSend.isEnabled = false
         etInput.doAfterTextChanged { refreshSendButtonState() }
