@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -52,11 +51,12 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.opengranola.android.ai.GenieXLocalLlmProvider
 import com.opengranola.android.ai.LocalModelStore
+import com.opengranola.android.data.NotificationEntity
 import com.opengranola.android.model.Meeting
+import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
 import com.opengranola.android.recording.LiveTranscriber
 import kotlinx.coroutines.launch
@@ -65,7 +65,6 @@ import kotlinx.coroutines.withContext
 import com.opengranola.android.usage.AppUsage
 import com.opengranola.android.usage.UsageSnapshot
 import com.opengranola.android.usage.UsageStatsRepository
-import com.opengranola.android.data.NotificationEntity
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,6 +114,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         val selected = meetings.firstOrNull { it.id == selectedId }
+        var latestSummary by remember(selectedId) { mutableStateOf<String?>(null) }
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { granted ->
@@ -132,10 +132,10 @@ class MainActivity : ComponentActivity() {
                     var usage by remember { mutableStateOf(UsageSnapshot()) }
                     var usageRefresh by remember { mutableIntStateOf(0) }
                     var notificationAccessEnabled by remember {
-                        mutableStateOf(NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName))
+                        mutableStateOf(NotificationReadService.isEnabled(this@MainActivity))
                     }
                     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-                        notificationAccessEnabled = NotificationManagerCompat.getEnabledListenerPackages(this@MainActivity).contains(packageName)
+                        notificationAccessEnabled = NotificationReadService.isEnabled(this@MainActivity)
                         usageRefresh++
                     }
                     LaunchedEffect(usageRefresh) {
@@ -144,11 +144,14 @@ class MainActivity : ComponentActivity() {
                     AssistantDashboard(
                         meetings = meetings,
                         usage = usage,
+                        modelName = selectedModel,
+                        modelState = modelState,
                         recentNotifications = recentNotifications,
                         notificationsToday = notificationsToday,
                         notificationAccessEnabled = notificationAccessEnabled,
                         onUsagePermission = { startActivity(UsageStatsRepository(this@MainActivity).settingsIntent()) },
-                        onNotificationPermission = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
+                        onNotificationPermission = { NotificationReadService.openSettings(this@MainActivity) },
+                        onLoadModel = { modelLauncher.launch(arrayOf("*/*")) },
                         onRefreshUsage = { usageRefresh++ },
                         onOpen = { selectedId = it.id },
                         onNew = {
@@ -167,6 +170,7 @@ class MainActivity : ComponentActivity() {
                         transcriptionState = transcriptionState,
                         summaryState = summaryState,
                         modelState = modelState,
+                        latestSummary = latestSummary,
                         onLoadModel = { modelLauncher.launch(arrayOf("*/*")) },
                         onBack = { meeting ->
                             viewModel.save(meeting)
@@ -199,6 +203,7 @@ class MainActivity : ComponentActivity() {
                                     summarizeLongMeeting(llm, completed.transcript, completed.notes, notificationContext(recentNotifications)) { summaryState = it }
                                 }.onSuccess { summary ->
                                     viewModel.save(completed.copy(notes = summary))
+                                    latestSummary = summary
                                     summaryState = "Summary ready"
                                 }.onFailure { error ->
                                     summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
@@ -212,6 +217,7 @@ class MainActivity : ComponentActivity() {
                                     summarizeLongMeeting(llm, meeting.transcript, meeting.notes, notificationContext(recentNotifications)) { summaryState = it }
                                 }.onSuccess { generated ->
                                     viewModel.save(meeting.copy(notes = generated))
+                                    latestSummary = generated
                                     summaryState = "Summary ready"
                                 }.onFailure { error ->
                                     summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
@@ -229,11 +235,14 @@ class MainActivity : ComponentActivity() {
 private fun AssistantDashboard(
     meetings: List<Meeting>,
     usage: UsageSnapshot,
+    modelName: String?,
+    modelState: String,
     recentNotifications: List<NotificationEntity>,
     notificationsToday: Int,
     notificationAccessEnabled: Boolean,
     onUsagePermission: () -> Unit,
     onNotificationPermission: () -> Unit,
+    onLoadModel: () -> Unit,
     onRefreshUsage: () -> Unit,
     onOpen: (Meeting) -> Unit,
     onNew: () -> Unit
@@ -293,6 +302,7 @@ private fun AssistantDashboard(
                         }
                     }
                 }
+                ModelCard(modelName = modelName, modelState = modelState, onLoadModel = onLoadModel)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatCard("FOCUS", if (usage.hasPermission) formatMinutes((usage.totalMinutes * .36f).toInt()) else "—", "estimated", Modifier.weight(1f))
                     StatCard("APPS USED", if (usage.hasPermission) usage.pickups.toString() else "—", "today", Modifier.weight(1f))
@@ -360,6 +370,25 @@ private fun AssistantDashboard(
 @androidx.compose.runtime.Composable
 private fun StatCard(label: String, value: String, caption: String, modifier: Modifier) {
     Card(modifier = modifier) { Column(Modifier.padding(12.dp)) { Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary); Text(value, style = MaterialTheme.typography.titleLarge); Text(caption, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+}
+
+@androidx.compose.runtime.Composable
+private fun ModelCard(modelName: String?, modelState: String, onLoadModel: () -> Unit) {
+    Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Surface(color = MaterialTheme.colorScheme.primary, shape = MaterialTheme.shapes.medium, modifier = Modifier.size(44.dp)) {
+                Text("✦", color = Color.White, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.titleLarge)
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Local intelligence", style = MaterialTheme.typography.titleMedium)
+                Text(modelName ?: "No model selected", color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, style = MaterialTheme.typography.bodySmall)
+                if (modelState != "No model loaded") Text(modelState, color = MaterialTheme.colorScheme.primary, maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            }
+            Button(onClick = onLoadModel, modifier = Modifier.height(44.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)) {
+                Text(if (modelName == null) "Load" else "Replace")
+            }
+        }
+    }
 }
 
 @androidx.compose.runtime.Composable
@@ -455,6 +484,7 @@ private fun MeetingEditor(
     transcriptionState: String,
     summaryState: String,
     modelState: String,
+    latestSummary: String?,
     onLoadModel: () -> Unit,
     onBack: (Meeting) -> Unit,
     onRecord: () -> Unit,
@@ -467,6 +497,9 @@ private fun MeetingEditor(
     LaunchedEffect(liveTranscript) {
         if (liveTranscript != null && liveTranscript.isNotBlank()) transcript = liveTranscript
     }
+    LaunchedEffect(latestSummary) {
+        if (!latestSummary.isNullOrBlank()) notes = latestSummary
+    }
 
     Column(
         Modifier
@@ -474,13 +507,15 @@ private fun MeetingEditor(
             .verticalScroll(rememberScrollState())
             .padding(20.dp)
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             TextButton(onClick = {
                 onBack(meeting.copy(title = title, transcript = transcript, notes = notes))
-            }) { Text("Meetings") }
-            Text("On-device", color = MaterialTheme.colorScheme.primary)
+            }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp)) { Text("‹  Meetings") }
+            Spacer(Modifier.width(12.dp))
+            Text("Meeting workspace", style = MaterialTheme.typography.titleMedium)
         }
-        OutlinedTextField(title, { title = it }, label = { Text("Meeting title") }, modifier = Modifier.fillMaxWidth())
+        Text("CAPTURE & REFLECT", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        OutlinedTextField(title, { title = it }, label = { Text("Meeting title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
@@ -496,12 +531,12 @@ private fun MeetingEditor(
             }
         }
         Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onRecord, enabled = !isRecording, modifier = Modifier.weight(1f)) { Text("Start recording") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = onRecord, enabled = !isRecording, modifier = Modifier.weight(1f).height(50.dp)) { Text("Start recording") }
             TextButton(
                 onClick = { onStopRecording(meeting.copy(title = title, transcript = transcript, notes = notes)) },
                 enabled = isRecording,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).height(50.dp)
             ) { Text("Stop") }
         }
         Spacer(Modifier.height(12.dp))
@@ -536,7 +571,7 @@ private fun MeetingEditor(
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(12.dp))
-        Button(onClick = { onSummarize(meeting.copy(title = title, transcript = transcript, notes = notes)) }) {
+        Button(onClick = { onSummarize(meeting.copy(title = title, transcript = transcript, notes = notes)) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
             Text("Generate local notes")
         }
     }
