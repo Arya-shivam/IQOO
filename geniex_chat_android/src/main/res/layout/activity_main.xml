@@ -102,6 +102,62 @@
             android:text="test"
             android:visibility="gone" />
 
+
+        <LinearLayout
+            android:id="@+id/ll_assistant_dashboard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <TextView
+                android:id="@+id/tv_context_dashboard"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No context saved yet. Add what you are working on."
+                android:textColor="#1F1F1F"
+                android:textSize="13sp" />
+
+            <EditText
+                android:id="@+id/et_context_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_input_box_background"
+                android:hint="Add context: project, task, blocker, preference..."
+                android:minLines="2"
+                android:padding="8dp"
+                android:textColorHint="#777777" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_context_save"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_rounded_border"
+                    android:text="Save Context"
+                    android:textAllCaps="false"
+                    android:textColor="#1F1F1F" />
+
+                <Button
+                    android:id="@+id/btn_context_plan"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_rounded_border"
+                    android:text="Make Plan"
+                    android:textAllCaps="false"
+                    android:textColor="#1F1F1F" />
+            </LinearLayout>
+        </LinearLayout>
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent">

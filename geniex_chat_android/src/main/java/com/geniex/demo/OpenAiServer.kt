@@ -32,6 +32,9 @@ class OpenAiServer(
     private val modelName: () -> String,
     private val isModelLoaded: () -> Boolean,
     private val deviceInfo: () -> JsonObject,
+    private val context: () -> JsonObject,
+    private val addContext: (String) -> JsonObject,
+    private val plan: suspend () -> JsonObject,
     private val complete: suspend (List<ApiMessage>) -> String,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -96,10 +99,23 @@ class OpenAiServer(
             when {
                 method == "GET" && path == "/health" -> respond(writer, 200, health())
                 method == "GET" && path == "/tools/device" -> respond(writer, 200, deviceInfo())
+                method == "GET" && path == "/context/today" -> respond(writer, 200, context())
+                method == "POST" && path == "/context/add" -> addContext(writer, String(body))
+                method == "POST" && path == "/plan/today" -> respond(writer, 200, plan())
                 method == "GET" && path == "/v1/models" -> respond(writer, 200, models())
                 method == "POST" && path == "/v1/chat/completions" -> chat(writer, String(body))
                 else -> respond(writer, 404, error("not found"))
             }
+        }
+    }
+
+    private fun addContext(writer: BufferedWriter, body: String) {
+        try {
+            val root = Json.parseToJsonElement(body).jsonObject
+            val text = root["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            respond(writer, 200, addContext(text))
+        } catch (error: Exception) {
+            respond(writer, 400, error(error.message ?: "invalid context request"))
         }
     }
 

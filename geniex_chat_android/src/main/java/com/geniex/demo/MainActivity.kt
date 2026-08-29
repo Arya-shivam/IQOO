@@ -111,15 +111,23 @@ class MainActivity : FragmentActivity() {
     private lateinit var topScrollContainer: LinearLayout
     private lateinit var llLoading: LinearLayout
     private lateinit var vTip: View
+    private lateinit var tvContextDashboard: TextView
+    private lateinit var etContextInput: EditText
+    private lateinit var btnContextSave: Button
+    private lateinit var btnContextPlan: Button
 
     private lateinit var llmWrapper: LlmWrapper
     private lateinit var vlmWrapper: VlmWrapper
     private val modelScope = CoroutineScope(Dispatchers.IO)
+    private val contextMemoryStore by lazy { ContextMemoryStore(this) }
     private val apiServer = OpenAiServer(
         port = 8080,
         modelName = { selectModelId.ifEmpty { "geniex" } },
         isModelLoaded = { hasLoadedModel() },
         deviceInfo = ::deviceInfo,
+        context = { contextMemoryStore.contextJson() },
+        addContext = { text -> saveContext(text) },
+        plan = ::generatePlanJson,
         complete = ::completeApiChat,
     )
     private val chatList = arrayListOf<ChatMessage>()
@@ -214,6 +222,32 @@ class MainActivity : FragmentActivity() {
         topScrollContainer = findViewById(R.id.ll_images_container)
         llLoading = findViewById(R.id.ll_loading)
         vTip = findViewById<View>(R.id.v_tip)
+        tvContextDashboard = findViewById(R.id.tv_context_dashboard)
+        etContextInput = findViewById(R.id.et_context_input)
+        btnContextSave = findViewById(R.id.btn_context_save)
+        btnContextPlan = findViewById(R.id.btn_context_plan)
+        refreshContextDashboard()
+        btnContextSave.setOnClickListener {
+            val text = etContextInput.text.toString()
+            if (text.isBlank()) {
+                Toast.makeText(this, "Add context first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            saveContext(text)
+            etContextInput.setText("")
+            refreshContextDashboard()
+        }
+        btnContextPlan.setOnClickListener {
+            modelScope.launch {
+                val plan = generatePlanText()
+                runOnUiThread {
+                    tvContextDashboard.text = plan
+                    messages.add(Message(plan, MessageType.ASSISTANT))
+                    reloadRecycleView()
+                }
+            }
+        }
+
 
         findViewById<Button>(R.id.btn_test).setOnClickListener {
             Thread {
@@ -307,6 +341,40 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun hasLoadedModel(): Boolean = isLoadLlmModel || isLoadVlmModel
+    private fun saveContext(text: String): JsonObject {
+        val saved = contextMemoryStore.addContext(text)
+        runOnUiThread { refreshContextDashboard() }
+        return saved
+    }
+
+    private fun refreshContextDashboard() {
+        if (::tvContextDashboard.isInitialized) {
+            tvContextDashboard.text = contextMemoryStore.dashboardText()
+        }
+    }
+
+    private suspend fun generatePlanText(): String {
+        val context = contextMemoryStore.dashboardText()
+        return if (isLoadLlmModel) {
+            completeApiChat(
+                listOf(
+                    ApiMessage(
+                        "user",
+                        "You are my personal productivity assistant. Use this saved context to infer durable memory and produce a concise current plan. Sections: Memory, Priorities, Next actions. Context:\n$context",
+                    ),
+                ),
+            )
+        } else {
+            "Load a text model to generate an AI plan.\n\nCurrent context:\n$context"
+        }
+    }
+
+    private suspend fun generatePlanJson(): JsonObject = buildJsonObject {
+        put("plan", generatePlanText())
+        put("model_loaded", isLoadLlmModel)
+        put("context", contextMemoryStore.contextJson())
+    }
+
     private fun deviceInfo(): JsonObject {
         val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
