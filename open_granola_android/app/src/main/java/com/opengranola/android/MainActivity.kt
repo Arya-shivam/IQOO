@@ -95,6 +95,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.core.content.ContextCompat
 import com.opengranola.android.ai.GenieXLocalLlmProvider
+import com.opengranola.android.ai.FrontierCoachWorker
+import com.opengranola.android.ai.OpenRouterCoachClient
 import com.opengranola.android.ai.LocalModelStore
 import com.opengranola.android.ai.GenieXModelRepository
 import com.opengranola.android.ai.GenieXCatalogModel
@@ -168,6 +170,7 @@ class MainActivity : ComponentActivity() {
         var selectedId by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
+        val frontier = remember { OpenRouterCoachClient(this@MainActivity) }
         val modelRepository = remember { GenieXModelRepository(this@MainActivity) }
         val modelStore = remember { LocalModelStore(this@MainActivity) }
         var selectedModel by remember { mutableStateOf(modelStore.selected()?.name) }
@@ -181,7 +184,11 @@ class MainActivity : ComponentActivity() {
         var downloadedModelIds by remember { mutableStateOf<Set<String>>(emptySet()) }
         var selectedComputeUnit by remember { mutableStateOf(modelRepository.selectedComputeUnit()) }
         var pendingComputeUnit by remember { mutableStateOf(selectedComputeUnit) }
-        var modelReady by remember { mutableStateOf(false) }
+        var frontierConfigured by remember { mutableStateOf(frontier.isConfigured) }
+        var frontierModel by remember { mutableStateOf(frontier.model) }
+        var frontierKeyDraft by remember { mutableStateOf("") }
+        var frontierModelDraft by remember { mutableStateOf(frontier.model) }
+        var showFrontierSettings by remember { mutableStateOf(false) }
         var chatState by remember { mutableStateOf("Ready · context stays on this device") }
         var chatBusy by remember { mutableStateOf(false) }
         var streamingResponse by remember { mutableStateOf("") }
@@ -200,6 +207,7 @@ class MainActivity : ComponentActivity() {
         }
         DisposableEffect(Unit) { onDispose { transcriber.release() } }
         LaunchedEffect(Unit) {
+            FrontierCoachWorker.schedule(this@MainActivity)
             modelRepository.selected()?.let { saved ->
                 runCatching { modelRepository.paths(saved) }.getOrNull()?.let { paths ->
                     val runtimeId = paths.runtime_id.ifEmpty { "llama_cpp" }
@@ -209,7 +217,6 @@ class MainActivity : ComponentActivity() {
                     selectedComputeUnit = computeUnit
                     modelState = "Loading · ${computeUnit.uppercase()} · local model"
                     val loadResult = withContext(Dispatchers.IO) { llm.preload() }
-                    modelReady = loadResult.isSuccess
                     modelState = loadResult.fold(
                         { "Ready · ${computeUnit.uppercase()} · warmed up" },
                         { "Model load failed · ${it.message ?: "try again"}" }
@@ -249,6 +256,42 @@ class MainActivity : ComponentActivity() {
 
         MaterialTheme {
             Surface(Modifier.fillMaxSize()) {
+                if (showFrontierSettings) {
+                    AlertDialog(
+                        onDismissRequest = { showFrontierSettings = false },
+                        title = { Text("Frontier coach") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Only curated summaries are sent to OpenRouter.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                OutlinedTextField(
+                                    value = frontierKeyDraft,
+                                    onValueChange = { frontierKeyDraft = it },
+                                    label = { Text("OpenRouter API key") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = frontierModelDraft,
+                                    onValueChange = { frontierModelDraft = it },
+                                    label = { Text("Model ID") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Button(onClick = {
+                                if (frontierKeyDraft.isBlank()) frontier.clearApiKey() else frontier.saveApiKey(frontierKeyDraft)
+                                frontier.saveModel(frontierModelDraft)
+                                frontierConfigured = frontier.isConfigured
+                                frontierModel = frontier.model
+                                FrontierCoachWorker.schedule(this@MainActivity)
+                                showFrontierSettings = false
+                            }) { Text("Save") }
+                        },
+                        dismissButton = { TextButton(onClick = { showFrontierSettings = false }) { Text("Cancel") } }
+                    )
+                }
                 if (showModelPicker) {
                     GenieXModelPicker(
                         models = modelRepository.catalog,
@@ -270,10 +313,8 @@ class MainActivity : ComponentActivity() {
                                     selectedComputeUnit = computeUnit
                                     selectedModel = model.displayName
                                     modelState = "Loading · ${computeUnit.uppercase()} · local model"
-                                    modelReady = false
                                     showModelPicker = false
                                     val loadResult = withContext(Dispatchers.IO) { llm.preload() }
-                                    modelReady = loadResult.isSuccess
                                     modelState = loadResult.fold(
                                         { "Ready · ${computeUnit.uppercase()} · warmed up" },
                                         { "Model load failed · ${it.message ?: "try again"}" }
@@ -344,21 +385,26 @@ class MainActivity : ComponentActivity() {
                         briefingState = briefingState,
                         briefingBusy = briefingBusy,
                         computeUnit = selectedComputeUnit,
+                        frontierConfigured = frontierConfigured,
+                        frontierModel = frontierModel,
                         notificationAccessEnabled = notificationAccessEnabled,
                         onUsagePermission = { startActivity(UsageStatsRepository(this@MainActivity).settingsIntent()) },
                         onNotificationPermission = { NotificationReadService.openSettings(this@MainActivity) },
                         onCalendarPermission = { calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR) },
                         onRefreshCalendar = { calendarRefresh++ },
                         onLoadModel = { pendingComputeUnit = selectedComputeUnit; showModelPicker = true },
+                        onFrontierSettings = {
+                            frontierKeyDraft = ""
+                            frontierModelDraft = frontierModel
+                            showFrontierSettings = true
+                        },
                         onRefreshUsage = { usageRefresh++ },
                         onSendChat = { message ->
-                            if (message.isNotBlank() && !modelReady) {
-                                chatState = if (selectedModel == null) {
-                                    showModelPicker = true
-                                    "Select and load a local model before chatting"
-                                } else {
-                                    "Model is not ready · ${modelState.removePrefix("Model load failed · ")}"
-                                }
+                            if (message.isNotBlank() && !frontierConfigured) {
+                                chatState = "Connect OpenRouter in Frontier settings before chatting"
+                                frontierKeyDraft = ""
+                                frontierModelDraft = frontierModel
+                                showFrontierSettings = true
                             } else if (message.isNotBlank()) scope.launch {
                                 chatBusy = true
                                 streamingResponse = ""
@@ -370,28 +416,12 @@ class MainActivity : ComponentActivity() {
                                         viewModel.saveChat("user", message.trim())
                                         context to history
                                     }
-                                    chatState = "Generating locally…"
+                                    chatState = "Sending curated context to frontier…"
                                     val response = withContext(Dispatchers.IO) {
-                                        val rawStream = StringBuilder()
-                                        var lastUiUpdate = 0L
-                                        llm.chat(
-                                            message.trim(),
-                                            contextAndHistory.first.text,
-                                            contextAndHistory.second,
-                                            onToken = { token ->
-                                                rawStream.append(token)
-                                                val now = android.os.SystemClock.uptimeMillis()
-                                                if (lastUiUpdate == 0L || now - lastUiUpdate >= 50L) {
-                                                    lastUiUpdate = now
-                                                    withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
-                                                        streamingResponse = sanitizeForDisplay(rawStream.toString())
-                                                    }
-                                                }
-                                            }
-                                        )
+                                        frontier.chat(message.trim(), contextAndHistory.first.text, contextAndHistory.second)
                                     }
-                                    viewModel.saveChat("assistant", response.text)
-                                    lastInferenceStats = response.stats
+                                    viewModel.saveChat("assistant", response)
+                                    lastInferenceStats = InferenceStats(0, 0, "frontier", 0.0, 0.0)
                                     streamingResponse = ""
                                     chatState = "Context used · response stored locally"
                                 } catch (error: Throwable) {
@@ -403,11 +433,13 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onGeneratePlan = { objective ->
-                            if (objective.isNotBlank()) scope.launch {
+                            if (objective.isNotBlank() && !frontierConfigured) {
+                                planState = "Connect OpenRouter in Frontier settings first"
+                            } else if (objective.isNotBlank()) scope.launch {
                                 runCatching {
-                                    planState = "Building plan from local context…"
+                                    planState = "Sending curated context to frontier…"
                                     val context = viewModel.buildContext("plan generation", objective)
-                                    llm.generatePlan(objective.trim(), context.text)
+                                    frontier.generatePlan(objective.trim(), context.text)
                                 }.onSuccess { generated ->
                                     viewModel.saveGeneratedPlan(generated)
                                     planState = "Plan stored on this device"
@@ -415,13 +447,14 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onGenerateBriefing = {
-                            if (!briefingBusy) scope.launch {
+                            if (!frontierConfigured) {
+                                briefingState = "Connect OpenRouter in Frontier settings first"
+                            } else if (!briefingBusy) scope.launch {
                                 briefingBusy = true
-                                briefingState = "Comparing commitments with today's signals…"
-                                runCatching {
-                                    val context = viewModel.buildContext("daily intent-reality briefing")
-                                    val response = llm.generateDailyBriefing(context.text)
-                                    viewModel.saveDailyInsight(response.text, context.snapshotId)
+                                    briefingState = "Sending curated context to frontier…"
+                                    runCatching {
+                                        val context = viewModel.buildContext("daily intent-reality briefing")
+                                        viewModel.saveDailyInsight(frontier.generateDailyBriefing(context.text), context.snapshotId)
                                 }.onSuccess {
                                     briefingState = "Daily briefing stored privately"
                                 }.onFailure { error ->
@@ -567,12 +600,15 @@ private fun AssistantDashboard(
     briefingState: String,
     briefingBusy: Boolean,
     computeUnit: String,
+    frontierConfigured: Boolean,
+    frontierModel: String,
     notificationAccessEnabled: Boolean,
     onUsagePermission: () -> Unit,
     onNotificationPermission: () -> Unit,
     onCalendarPermission: () -> Unit,
     onRefreshCalendar: () -> Unit,
     onLoadModel: () -> Unit,
+    onFrontierSettings: () -> Unit,
     onRefreshUsage: () -> Unit,
     onSendChat: (String) -> Unit,
     onGeneratePlan: (String) -> Unit,
@@ -731,6 +767,7 @@ private fun AssistantDashboard(
                     }
                 }
                 ModelCard(modelName = modelName, modelState = modelState, computeUnit = computeUnit, onLoadModel = onLoadModel)
+                FrontierCard(configured = frontierConfigured, model = frontierModel, onClick = onFrontierSettings)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatCard("FOCUS", if (usage.hasPermission) formatMinutes((usage.totalMinutes * .36f).toInt()) else "—", "estimated", Modifier.weight(1f))
                     StatCard("APPS USED", if (usage.hasPermission) usage.pickups.toString() else "—", "today", Modifier.weight(1f))
@@ -1280,6 +1317,35 @@ private fun ModelCard(modelName: String?, modelState: String, computeUnit: Strin
             Button(onClick = onLoadModel, modifier = Modifier.height(44.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)) {
                 Text(if (modelName == null) "Load" else "Replace")
             }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun FrontierCard(configured: Boolean, model: String, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFFE9EEFF))
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(color = Color(0xFF5367DB), shape = MaterialTheme.shapes.medium, modifier = Modifier.size(44.dp)) {
+                Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color.White, modifier = Modifier.padding(10.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Frontier coach", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (configured) "Connected · $model" else "Not connected",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text("Curated context only", color = Color(0xFF5367DB), style = MaterialTheme.typography.labelSmall)
+            }
+            Button(onClick = onClick, modifier = Modifier.height(44.dp)) { Text(if (configured) "Settings" else "Connect") }
         }
     }
 }
