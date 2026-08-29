@@ -47,6 +47,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
@@ -54,6 +56,7 @@ import androidx.core.content.ContextCompat
 import com.opengranola.android.ai.GenieXLocalLlmProvider
 import com.opengranola.android.ai.LocalModelStore
 import com.opengranola.android.model.Meeting
+import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
 import com.opengranola.android.recording.LiveTranscriber
 import kotlinx.coroutines.launch
@@ -80,6 +83,9 @@ class MainActivity : ComponentActivity() {
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
         val modelStore = remember { LocalModelStore(this@MainActivity) }
         var selectedModel by remember { mutableStateOf(modelStore.selected()?.name) }
+        var notificationAccess by remember {
+            mutableStateOf(NotificationReadService.isEnabled(this@MainActivity))
+        }
         var isRecording by remember { mutableStateOf(false) }
         var liveTranscript by remember { mutableStateOf<String?>(null) }
         var transcriptionState by remember { mutableStateOf("Ready") }
@@ -93,6 +99,9 @@ class MainActivity : ComponentActivity() {
             )
         }
         DisposableEffect(Unit) { onDispose { transcriber.release() } }
+        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+            notificationAccess = NotificationReadService.isEnabled(this@MainActivity)
+        }
         val modelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
                 modelState = "Loading model… copying it into private storage"
@@ -133,6 +142,8 @@ class MainActivity : ComponentActivity() {
                         usage = usage,
                         onUsagePermission = { startActivity(UsageStatsRepository(this@MainActivity).settingsIntent()) },
                         onRefreshUsage = { usageRefresh++ },
+                        notificationAccess = notificationAccess,
+                        onNotificationAccess = { NotificationReadService.openSettings(this@MainActivity) },
                         onOpen = { selectedId = it.id },
                         onNew = {
                             val meeting = Meeting(title = "New meeting")
@@ -214,6 +225,8 @@ private fun AssistantDashboard(
     usage: UsageSnapshot,
     onUsagePermission: () -> Unit,
     onRefreshUsage: () -> Unit,
+    notificationAccess: Boolean,
+    onNotificationAccess: () -> Unit,
     onOpen: (Meeting) -> Unit,
     onNew: () -> Unit
 ) {
@@ -270,6 +283,25 @@ private fun AssistantDashboard(
                             }
                             Text("Open", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                         }
+                    }
+                }
+                Card(
+                    onClick = onNotificationAccess,
+                    colors = androidx.compose.material3.CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            if (notificationAccess) "Notification context is on" else "Turn on notification context",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            if (notificationAccess) "Recent notifications are retained locally for the assistant."
+                            else "Allow access so the assistant can read recent notifications on this device.",
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
