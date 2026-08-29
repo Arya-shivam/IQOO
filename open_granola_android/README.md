@@ -13,6 +13,36 @@ the existing `geniex_chat_android` GenieX demo in this repository.
 - Transcript and note fields ready for local STT/LLM pipelines
 - No cloud account or network API in the application flow
 
+## Gmail and GitHub sync setup
+
+The app uses a WorkManager job that runs roughly every 12 hours, plus the
+`Sync now` button. It only runs when the device is online. Credentials are
+stored with the Android Keystore and synced context stays in the app's private
+storage.
+
+For Gmail:
+
+1. In Google Cloud Console, enable Gmail API and create an OAuth client for a
+   Desktop/installed application.
+2. Obtain a refresh token for the `https://www.googleapis.com/auth/gmail.readonly`
+   scope (OAuth Playground is the quickest manual route).
+3. Paste the client ID, client secret, and refresh token into **Setup**.
+
+For GitHub:
+
+1. Create a fine-grained personal access token limited to the repositories you
+   want to read, with **Contents: Read-only** and **Metadata: Read-only**.
+2. Paste the token and comma-separated repositories such as `owner/repo` into
+   **Setup**.
+
+No API key is needed for Gmail or GitHub. The Gmail refresh token and GitHub
+token are required; Gmail client ID/secret are only used to refresh the Gmail
+access token.
+
+Calendar uses Android's local calendar provider. Grant Calendar access in the
+app; it needs no additional token or API key and reads the next 14 days of
+events into the same local assistant context.
+
 `GenieXLocalLlmProvider` initializes the SDK once, loads the privately imported
 model with the same `LlmWrapper` flow used by the companion GenieX app, applies
 the model chat template, and streams structured meeting notes locally. Inference
