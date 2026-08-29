@@ -84,6 +84,11 @@ class MainActivity : ComponentActivity() {
                             ) startForegroundService(recordingIntent())
                             else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         },
+                        onStopRecording = {
+                            startService(Intent(this@MainActivity, RecordingService::class.java).apply {
+                                action = RecordingService.ACTION_STOP
+                            })
+                        },
                         onSummarize = { meeting ->
                             scope.launch {
                                 val generated = llm.summarize(meeting.transcript, meeting.notes)
@@ -128,6 +133,7 @@ private fun MeetingEditor(
     providerName: String,
     onBack: () -> Unit,
     onRecord: () -> Unit,
+    onStopRecording: () -> Unit,
     onSummarize: (Meeting) -> Unit
 ) {
     var title by remember(meeting.id) { mutableStateOf(meeting.title) }
@@ -141,7 +147,10 @@ private fun MeetingEditor(
         }
         OutlinedTextField(title, { title = it }, label = { Text("Meeting title") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(12.dp))
-        Button(onClick = onRecord, modifier = Modifier.fillMaxWidth()) { Text("Start local recording") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onRecord, modifier = Modifier.weight(1f)) { Text("Start recording") }
+            TextButton(onClick = onStopRecording, modifier = Modifier.weight(1f)) { Text("Stop") }
+        }
         Spacer(Modifier.height(12.dp))
         Text("Transcript", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(

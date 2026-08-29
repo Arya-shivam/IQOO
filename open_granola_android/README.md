@@ -7,7 +7,8 @@ the existing `geniex_chat_android` GenieX demo in this repository.
 
 - Native Kotlin/Jetpack Compose meeting workspace
 - Meeting list and editor
-- Microphone permission and foreground recording service entry point
+- Microphone permission and foreground recording service with local `.m4a` capture
+- Room database schema and DAO for durable meeting records
 - Local LLM provider boundary with GenieX provider
 - Transcript and note fields ready for local STT/LLM pipelines
 - No cloud account or network API in the application flow
@@ -49,9 +50,9 @@ different local provider implementation.
 
 ## Roadmap
 
-1. Replace the recording service entry point with durable local audio capture.
-2. Add on-device Whisper transcription and transcript persistence with Room.
-3. Wire GenieX model management and structured JSON note generation.
+1. Add on-device Whisper transcription and connect transcript persistence to the Room DAO.
+2. Wire GenieX model management and structured JSON note generation.
+3. Connect the Compose screens to Room-backed `MeetingViewModel` state.
 4. Add Markdown export, search, retention controls, and encrypted storage.
 5. Add device capability detection and non-Qualcomm local-runtime fallback.
 6. Add explicit sharing, encrypted sync, and release-quality privacy controls.
