@@ -1,0 +1,12 @@
+# Gradle state and downloaded build caches
+.gradle/
+.gradle-*/
+
+# Android/Gradle build outputs
+build/
+captures/
+.cxx/
+
+# Local machine configuration
+local.properties
+
