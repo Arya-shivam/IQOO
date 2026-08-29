@@ -108,6 +108,7 @@ import com.opengranola.android.data.PlanTaskEntity
 import com.opengranola.android.data.ChatMessageEntity
 import com.opengranola.android.data.CommitmentEntity
 import com.opengranola.android.data.DailyInsightEntity
+import com.opengranola.android.context.ContextPurpose
 import com.opengranola.android.model.Meeting
 import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
@@ -350,7 +351,7 @@ class MainActivity : ComponentActivity() {
                                 try {
                                     chatState = "Retrieving local context…"
                                     val contextAndHistory = withContext(Dispatchers.IO) {
-                                        val context = viewModel.buildContext("interactive chat")
+                                        val context = viewModel.buildContext(ContextPurpose.CHAT, message)
                                         val history = chatMessages.takeLast(4).map { AssistantTurn(it.role, it.content) }
                                         viewModel.saveChat("user", message.trim())
                                         context to history
@@ -391,7 +392,7 @@ class MainActivity : ComponentActivity() {
                             if (objective.isNotBlank()) scope.launch {
                                 runCatching {
                                     planState = "Building plan from local context…"
-                                    val context = viewModel.buildContext("plan generation", objective)
+                                    val context = viewModel.buildContext(ContextPurpose.PLAN, objective)
                                     llm.generatePlan(objective.trim(), context.text)
                                 }.onSuccess { generated ->
                                     viewModel.saveGeneratedPlan(generated)
@@ -404,7 +405,7 @@ class MainActivity : ComponentActivity() {
                                 briefingBusy = true
                                 briefingState = "Comparing commitments with today's signals…"
                                 runCatching {
-                                    val context = viewModel.buildContext("daily intent-reality briefing")
+                                    val context = viewModel.buildContext(ContextPurpose.DAILY_BRIEFING)
                                     val response = llm.generateDailyBriefing(context.text)
                                     viewModel.saveDailyInsight(response.text, context.snapshotId)
                                 }.onSuccess {
@@ -477,7 +478,7 @@ class MainActivity : ComponentActivity() {
                             summaryState = "Summarizing locally…"
                             scope.launch {
                                 runCatching {
-                                    summarizeLongMeeting(llm, completed.transcript, completed.notes) { summaryState = it }
+                                    summarizeLongMeeting(llm, completed.transcript) { summaryState = it }
                                 }.onSuccess { summary ->
                                     val summarized = completed.copy(notes = summary)
                                     viewModel.save(summarized)
@@ -501,7 +502,7 @@ class MainActivity : ComponentActivity() {
                             scope.launch {
                                 summaryState = "Starting local model…"
                                 runCatching {
-                                    summarizeLongMeeting(llm, meeting.transcript, meeting.notes) { summaryState = it }
+                                    summarizeLongMeeting(llm, meeting.transcript) { summaryState = it }
                                 }.onSuccess { generated ->
                                     val summarized = meeting.copy(notes = generated)
                                     viewModel.save(summarized)
@@ -1426,30 +1427,38 @@ private fun formatMinutes(minutes: Int): String = if (minutes >= 60) "${minutes 
 private suspend fun summarizeLongMeeting(
     provider: com.opengranola.android.ai.LocalLlmProvider,
     transcript: String,
-    userNotes: String,
     onProgress: (String) -> Unit = {}
 ): String {
-    if (transcript.isBlank()) return provider.summarize(transcript, userNotes, context = "")
+    require(transcript.isNotBlank()) { "There is no meeting transcript to summarize" }
+    if (transcript.length <= SUMMARY_INPUT_CHARS) {
+        onProgress("Writing summary…")
+        return provider.summarize(transcript)
+    }
 
-    val chunks = transcript.chunked(8_000)
+    val chunks = transcript.chunked(SUMMARY_INPUT_CHARS)
     val summaries = mutableListOf<String>()
     for (index in chunks.indices) {
         onProgress("Summarizing section ${index + 1} of ${chunks.size}…")
-        summaries += provider.summarize(chunks[index], "Meeting section ${index + 1} of ${chunks.size}. $userNotes", context = "")
+        summaries += provider.summarize(
+            chunks[index],
+            "This is section ${index + 1} of ${chunks.size}. Preserve only facts stated in this section."
+        )
     }
     var combined = summaries.joinToString("\n\n") { it.trim() }
-    while (combined.length > 8_000) {
+    while (combined.length > SUMMARY_INPUT_CHARS) {
         val reduced = mutableListOf<String>()
-        val groups = combined.chunked(8_000)
+        val groups = combined.chunked(SUMMARY_INPUT_CHARS)
         for ((index, group) in groups.withIndex()) {
             onProgress("Combining summary pass · section ${index + 1} of ${groups.size}…")
-            reduced += provider.summarize(group, "Combine these meeting section summaries into a faithful summary. $userNotes", context = "")
+            reduced += provider.summarize(group, "Combine these partial meeting summaries without adding new facts.")
         }
         combined = reduced.joinToString("\n\n")
     }
     onProgress("Writing final summary…")
-    return provider.summarize(combined, "Create the final meeting summary with decisions, action items, and open questions. $userNotes", context = "")
+    return provider.summarize(combined, "Create the final meeting summary from these partial summaries only.")
 }
+
+private const val SUMMARY_INPUT_CHARS = 3_000
 
 @androidx.compose.runtime.Composable
 private fun MeetingList(meetings: List<Meeting>, onOpen: (Meeting) -> Unit, onNew: () -> Unit) {

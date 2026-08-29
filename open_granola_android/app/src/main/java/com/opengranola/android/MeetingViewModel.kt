@@ -11,6 +11,8 @@ import com.opengranola.android.ai.GeneratedPlan
 import com.opengranola.android.ai.GeneratedCommitment
 import com.opengranola.android.context.AssistantContext
 import com.opengranola.android.context.ContextAssembler
+import com.opengranola.android.context.ContextPurpose
+import com.opengranola.android.context.ContextRequest
 import com.opengranola.android.data.ChatMessageEntity
 import com.opengranola.android.data.ChatSessionEntity
 import com.opengranola.android.data.ContextEventEntity
@@ -67,8 +69,8 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    suspend fun buildContext(purpose: String, extra: String = ""): AssistantContext =
-        contextAssembler.build(purpose, extra, _userName.value)
+    suspend fun buildContext(purpose: ContextPurpose, query: String = ""): AssistantContext =
+        contextAssembler.build(ContextRequest(purpose, query, _userName.value))
 
     fun updateUserName(value: String) {
         val clean = value.trim().take(60).ifBlank { "Friend" }

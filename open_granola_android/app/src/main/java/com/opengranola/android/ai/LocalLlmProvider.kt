@@ -18,7 +18,7 @@ import org.json.JSONArray
 /** Stable boundary for local inference. GenieX is wired behind this interface. */
 interface LocalLlmProvider {
     val name: String
-    suspend fun summarize(transcript: String, userNotes: String, context: String = ""): String
+    suspend fun summarize(transcript: String, guidance: String = ""): String
     suspend fun chat(message: String, context: String, history: List<AssistantTurn>, onToken: suspend (String) -> Unit = {}): InferenceResult
     suspend fun generatePlan(objective: String, context: String): GeneratedPlan
     suspend fun extractCommitments(meetingTitle: String, transcript: String, summary: String): List<GeneratedCommitment>
@@ -65,21 +65,21 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         runCatching { ensureLlm(); Unit }
     }
 
-    override suspend fun summarize(transcript: String, userNotes: String, context: String): String {
+    override suspend fun summarize(transcript: String, guidance: String): String {
         val prompt = """
             You are pa, a private on-device meeting assistant. Summarize faithfully.
             Return: Overview, Decisions, Action items, Open questions.
             Do not invent details. If a section has no evidence, write “None noted”.
-            User notes: $userNotes
+            ${guidance.take(300)}
 
             Transcript:
             $transcript
         """.trimIndent()
-        return generate(arrayOf(ChatMessage("user", prompt)), 2048).text
+        return generate(arrayOf(ChatMessage("user", prompt)), 640).text
     }
 
     override suspend fun chat(message: String, context: String, history: List<AssistantTurn>, onToken: suspend (String) -> Unit): InferenceResult {
-        val messages = history.takeLast(4).map { ChatMessage(it.role, it.content) }.toMutableList()
+        val messages = history.takeLast(3).map { ChatMessage(it.role, it.content.take(700)) }.toMutableList()
         messages += ChatMessage("user", """
             You are pa, a private local personal assistant. Use only relevant context below.
             Be concise, acknowledge uncertainty, and never claim an action was executed.
@@ -90,7 +90,7 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             USER MESSAGE:
             $message
         """.trimIndent())
-        return generate(messages.toTypedArray(), 768, onToken)
+        return generate(messages.toTypedArray(), 512, onToken)
     }
 
     override suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
@@ -102,7 +102,7 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
 
             Objective: $objective
             Local context: $context
-        """.trimIndent())), 1536).text
+        """.trimIndent())), 640).text
         return parsePlan(raw, objective)
     }
 
@@ -119,9 +119,9 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             Do not infer tasks that were not actually agreed. Return [] if there are none. Do not include markdown.
 
             Meeting: $meetingTitle
-            Summary: ${summary.take(3500)}
-            Transcript excerpt: ${transcript.take(5000)}
-        """.trimIndent())), 1024).text
+            Summary: ${summary.take(1400)}
+            Transcript excerpt: ${transcript.take(2600)}
+        """.trimIndent())), 512).text
         return parseCommitments(raw).map { commitment ->
             if (isEvidenceVerified(commitment.evidence, transcript, summary)) {
                 commitment
@@ -140,7 +140,7 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
 
             LOCAL CONTEXT:
             $context
-        """.trimIndent())), 512)
+        """.trimIndent())), 384)
     }
 
     private suspend fun generate(

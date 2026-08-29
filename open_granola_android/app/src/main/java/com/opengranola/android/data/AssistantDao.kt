@@ -42,6 +42,12 @@ interface AssistantDao {
     @Query("SELECT * FROM context_events ORDER BY timestamp DESC LIMIT :limit")
     suspend fun recentEvents(limit: Int): List<ContextEventEntity>
 
+    @Query("SELECT * FROM context_events WHERE type = :type ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun recentEventsByType(type: String, limit: Int): List<ContextEventEntity>
+
+    @Query("SELECT * FROM context_events WHERE type = :type AND timestamp >= :from ORDER BY timestamp ASC LIMIT :limit")
+    suspend fun upcomingEventsByType(type: String, from: Long, limit: Int): List<ContextEventEntity>
+
     @Query("SELECT * FROM commitments WHERE status = 'open' ORDER BY updatedAt DESC LIMIT :limit")
     suspend fun activeCommitments(limit: Int): List<CommitmentEntity>
 
