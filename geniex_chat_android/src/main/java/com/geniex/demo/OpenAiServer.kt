@@ -32,7 +32,13 @@ class OpenAiServer(
     private val modelName: () -> String,
     private val isModelLoaded: () -> Boolean,
     private val deviceInfo: () -> JsonObject,
+    private val context: () -> JsonObject,
+    private val addContext: suspend (String) -> JsonObject,
+    private val plan: suspend () -> JsonObject,
     private val complete: suspend (List<ApiMessage>) -> String,
+    private val journalEntries: (String?, String?) -> JsonObject,
+    private val journalSummary: () -> JsonObject,
+    private val journalReflection: suspend () -> JsonObject,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
     private val requestLock = Mutex()
@@ -92,14 +98,35 @@ class OpenAiServer(
                 return
             }
             val method = parts[0]
-            val path = parts[1].substringBefore('?')
+            val target = parts[1]
+            val path = target.substringBefore('?')
+            val query = target.substringAfter('?', "")
+            val category = query.split('&').firstOrNull { it.startsWith("category=") }?.substringAfter('=')
+            val date = query.split('&').firstOrNull { it.startsWith("date=") }?.substringAfter('=')
             when {
                 method == "GET" && path == "/health" -> respond(writer, 200, health())
                 method == "GET" && path == "/tools/device" -> respond(writer, 200, deviceInfo())
+                method == "GET" && path == "/context/today" -> respond(writer, 200, context())
+                method == "POST" && path == "/context/add" -> addContext(writer, String(body))
+                method == "POST" && path == "/plan/today" -> respond(writer, 200, plan())
+                method == "POST" && path == "/journal/entry" -> addContext(writer, String(body))
+                method == "GET" && path == "/journal/entries" -> respond(writer, 200, journalEntries(category, date))
+                method == "GET" && path == "/journal/summary/week" -> respond(writer, 200, journalSummary())
+                method == "POST" && path == "/journal/reflection/week" -> respond(writer, 200, journalReflection())
                 method == "GET" && path == "/v1/models" -> respond(writer, 200, models())
                 method == "POST" && path == "/v1/chat/completions" -> chat(writer, String(body))
                 else -> respond(writer, 404, error("not found"))
             }
+        }
+    }
+
+    private suspend fun addContext(writer: BufferedWriter, body: String) {
+        try {
+            val root = Json.parseToJsonElement(body).jsonObject
+            val text = root["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            respond(writer, 200, addContext(text))
+        } catch (error: Exception) {
+            respond(writer, 400, error(error.message ?: "invalid journal request"))
         }
     }
 

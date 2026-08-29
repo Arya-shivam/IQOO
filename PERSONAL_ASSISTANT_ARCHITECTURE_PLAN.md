@@ -9,8 +9,8 @@ Android phone
   - GenieX LLM on NPU
   - OpenAI-compatible API server
   - Native Android context collectors
-  - Local memory
-  - TTS / notifications
+  - Local memory and planning state
+  - Dashboard for context, memory, plans, and approvals
 
 PC CLI
   - Git status / pull / commit / push
@@ -31,9 +31,9 @@ Bring useful signals into the assistant from phone, PC, and cloud APIs.
 - Device state: battery, charging, Android version, model.
 - Notifications through `NotificationListenerService`.
 - Calendar through Android Calendar provider or Google Calendar API.
-- TTS through Android `TextToSpeech`.
 - Files shared into the app through Android intents.
 - Wake/start signals through first unlock, app open, charging changes, and notification events.
+- TTS is a top-up UX layer, not base infrastructure.
 
 #### PC sources
 
@@ -122,7 +122,8 @@ Let the assistant act safely after proposing actions and receiving approval.
 - Docs: create plans, changelogs, README sections.
 - Gmail: summarize, draft replies, label/archive after approval.
 - Calendar: create reminders and focus blocks after approval.
-- Android: speak briefing, show notification, open app intent.
+- Android: show notifications, open app intents, run foreground service controls.
+- Top-up UX: speak briefings through TTS after the core context/memory/plan loop is stable.
 
 #### Required action loop
 
@@ -209,44 +210,49 @@ python geniex_cli.py ask "Reply with one word: OK"
 
 ## Roadmap
 
-### Milestone 1: Stable Local API
+### Milestone 1: Assistant Core
 
-- Add `/health` and `/tools/device`.
-- Add `/tools/storage`.
-- Add `/tools/network`.
-- Add foreground service notification: `GenieX assistant running`.
-- Add basic auth token for LAN mode.
-- Add streaming responses for `/v1/chat/completions`.
-
-### Milestone 2: Local Memory
+This is the base. Build context, memory, and planning before voice/TTS polish.
 
 - Add Android SQLite memory store.
+- Add normalized context event store.
+- Add dashboard screen for status, context, memory, current plan, and approvals.
 - Add `/memory/add`.
 - Add `/memory/list`.
 - Add `/memory/search`.
+- Add `/context/events`.
+- Add `/context/recent`.
 - Add `/context/today`.
+- Add `/plan/current`.
+- Add `/plan/today`.
 - Add memory inspect/delete controls.
+
+### Milestone 2: Context Ingestion
+
+Bring useful local signals into the assistant.
+
+- Keep `/health` and `/tools/device` as baseline phone context.
+- Add `/tools/storage`.
+- Add `/tools/network`.
+- Add manual context entry from app and CLI.
+- Add `context add`, `context list`, and `context today` commands in PC CLI.
+- Add `projects scan` in PC CLI.
+- Store repo paths, branches, diff summaries, current goals, and project notes.
 
 ### Milestone 3: Project Awareness
 
-- Add `projects scan` in PC CLI.
-- Store repo paths, branches, diff summaries, and current goals.
+Make the assistant know active development state.
+
 - Add `git summary` command.
 - Add `git plan` command.
 - Add `docs update` command with overwrite protection.
+- Store daily project summaries.
+- Link Git changes to project memory and current plan.
+- Detect blockers and next actions from repo state.
 
-### Milestone 4: Morning Briefing
+### Milestone 4: Notification Ingestion
 
-- Build `morning` command.
-- Collect calendar, GitHub, Gmail, notifications, project state, and memory.
-- Generate daily plan.
-- Add TTS endpoint:
-
-```text
-POST /tools/tts/speak
-```
-
-### Milestone 5: Notifications
+Notifications are the first high-value Android context source.
 
 - Add `NotificationListenerService`.
 - User enables notification access manually.
@@ -258,9 +264,13 @@ GET /tools/notifications
 POST /tools/notifications/summarize
 ```
 
-- Start read-only. No auto-replies.
+- Start read-only.
+- Redact OTPs, password-reset links, and token-like content.
+- No auto-replies.
 
-### Milestone 6: Gmail
+### Milestone 5: Gmail
+
+Use Gmail API OAuth. Do not scrape Gmail app private data.
 
 - Implement Gmail OAuth in PC CLI.
 - Add read-only commands first:
@@ -278,13 +288,33 @@ python geniex_cli.py gmail draft-reply THREAD_ID
 
 - Sending requires explicit approval.
 
-### Milestone 7: Action Executor
+### Milestone 6: Action Executor
+
+Actions are base, but only after context and memory exist.
 
 - Standardize tool calls.
 - Add confirmation UI.
 - Add action logs.
 - Add rollback hints where possible.
 - Add policy: no silent external actions.
+- PC companion handles Git/files/builds for PC-local projects.
+- Android handles native phone actions it has permission for.
+
+### Milestone 7: Top-Up UX
+
+TTS and voice are useful polish, not the foundation.
+
+- Add foreground service notification: `GenieX assistant running`.
+- Add basic auth token for LAN mode.
+- Add streaming responses for `/v1/chat/completions`.
+- Add TTS endpoint:
+
+```text
+POST /tools/tts/speak
+```
+
+- Add voice input later.
+- Add widgets/quick settings tile later.
 
 ## Product Principle
 

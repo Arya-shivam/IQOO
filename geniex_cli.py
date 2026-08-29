@@ -74,6 +74,11 @@ def main() -> None:
     sub.add_parser("models", help="List models exposed by the phone server")
     sub.add_parser("health", help="Show phone server health")
     sub.add_parser("device", help="Show native Android device info")
+    context_add = sub.add_parser("context-add", help="Save context into the Android assistant")
+    context_add.add_argument("text", nargs="+")
+    sub.add_parser("context-list", help="List recent Android assistant context")
+    sub.add_parser("plan", help="Generate a plan from saved context")
+
 
 
     sub.add_parser("status", help="Show Git status")
@@ -97,6 +102,12 @@ def main() -> None:
         print(json.dumps(api("/health"), indent=2))
     elif args.command == "device":
         print(json.dumps(api("/tools/device"), indent=2))
+    elif args.command == "context-add":
+        print(json.dumps(api("/context/add", {"text": " ".join(args.text)}), indent=2))
+    elif args.command == "context-list":
+        print(json.dumps(api("/context/today"), indent=2))
+    elif args.command == "plan":
+        print(json.dumps(api("/plan/today", {}), indent=2))
     elif args.command == "status":
         print(run("git", "status", "--short"), end="")
     elif args.command == "pull":
