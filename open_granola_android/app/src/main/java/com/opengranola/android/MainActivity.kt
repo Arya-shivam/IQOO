@@ -1560,7 +1560,7 @@ private fun ChatBubble(message: ChatMessageEntity) {
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(if (assistant) "PA" else "YOU", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
-            Text(message.content)
+            Text(message.content.replace("**", ""))
         }
     }
 }
