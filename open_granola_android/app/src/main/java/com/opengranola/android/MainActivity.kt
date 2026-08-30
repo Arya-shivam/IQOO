@@ -145,6 +145,7 @@ private val DISPLAY_ROLE_PREFIX = Regex(
     "^\\s*(?:#{1,6}\\s*)?(?:assistant|model|system|user|pa)\\b(?:\\s*[:\\-]\\s*|\\s*\\n+|\\s+)",
     RegexOption.IGNORE_CASE
 )
+private val CHAT_MARKDOWN_PREFIX = Regex("(?m)^\\s*(?:#{1,6}|[-*]+)\\s*")
 private val CHAT_WRITE_INTENT = Regex(
     "^\\s*(?:please\\s+)?(?:add|create|set|make|build)\\s+(?:a\\s+|my\\s+)?(goal|plan)(?:\\s+(?:to|for))?\\s*[:\\-]?\\s+(.+)$",
     RegexOption.IGNORE_CASE
@@ -782,13 +783,12 @@ private fun AssistantDashboard(
             Modifier.fillMaxSize().padding(insets).verticalScroll(dashboardScrollState).padding(horizontal = 20.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column {
-                    Text("pa", style = MaterialTheme.typography.headlineSmall)
-                    Text("Private and on-device", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(userName, style = MaterialTheme.typography.titleMedium)
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("pa for $userName", style = MaterialTheme.typography.headlineSmall)
+                        Text("Your private, context-aware assistant", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     IconButton(onClick = { nameDraft = userName; showNameEditor = true }) {
                         Icon(Icons.Rounded.Edit, contentDescription = "Edit your name")
                     }
@@ -1560,7 +1560,7 @@ private fun ChatBubble(message: ChatMessageEntity) {
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text(if (assistant) "PA" else "YOU", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
-            Text(message.content.replace("**", ""))
+            Text(message.content.replace("**", "").replace(CHAT_MARKDOWN_PREFIX, "• "))
         }
     }
 }

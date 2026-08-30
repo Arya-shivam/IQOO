@@ -24,7 +24,7 @@ class OpenRouterCoachClient(context: Context) {
     fun saveModel(value: String) = preferences.edit().putString(KEY_MODEL, value.trim().ifBlank { DEFAULT_MODEL }).apply()
 
     suspend fun chat(message: String, context: String, history: List<AssistantTurn>): String = complete(
-        listOf(FrontierMessage("system", "You are pa, a careful personal coach. Use only the curated context. Never claim an action was executed. Be concise and evidence-based.")) +
+        listOf(FrontierMessage("system", "You are pa, a careful personal coach. Use only the curated context. Never claim an action was executed. Reply in at most 5 short lines, each starting with •. No Markdown headings, asterisks, or dashes.")) +
             history.takeLast(6).map { FrontierMessage(it.role, it.content) } +
             FrontierMessage("user", "CURATED CONTEXT:\n$context\n\nUSER MESSAGE:\n$message"),
         768
