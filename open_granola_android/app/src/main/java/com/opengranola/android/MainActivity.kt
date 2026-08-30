@@ -693,14 +693,13 @@ private fun AssistantDashboard(
     var planPendingDelete by remember { mutableStateOf<PlanEntity?>(null) }
     var meetingPendingSummaryDelete by remember { mutableStateOf<Meeting?>(null) }
     var commitmentPendingDelete by remember { mutableStateOf<CommitmentEntity?>(null) }
-    val dashboardScrollState = rememberScrollState()
+    val dashboardScrollStates = listOf(rememberScrollState(), rememberScrollState(), rememberScrollState(), rememberScrollState())
+    val dashboardScrollState = dashboardScrollStates[tab]
 
     LaunchedEffect(tab, chatBusy, chatMessages.size) {
         if (tab == 1 && (chatBusy || chatMessages.isNotEmpty())) {
             delay(120)
             dashboardScrollState.animateScrollTo(dashboardScrollState.maxValue)
-        } else if (tab != 1) {
-            dashboardScrollState.scrollTo(0)
         }
     }
 
@@ -760,8 +759,9 @@ private fun AssistantDashboard(
         )
     }
     Scaffold(
+        containerColor = Color(0xFFF7F9F7),
         bottomBar = {
-            NavigationBar(containerColor = Color.Transparent) {
+            NavigationBar(containerColor = Color(0xFFF7F9F7)) {
                 val destinations = listOf(
                     Triple("Home", Icons.Rounded.Home, "Home"),
                     Triple("Chat", Icons.Rounded.ChatBubble, "Chat"),
@@ -783,14 +783,20 @@ private fun AssistantDashboard(
             Modifier.fillMaxSize().padding(insets).verticalScroll(dashboardScrollState).padding(horizontal = 20.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
-                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("pa for $userName", style = MaterialTheme.typography.headlineSmall)
-                        Text("Your private, context-aware assistant", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    IconButton(onClick = { nameDraft = userName; showNameEditor = true }) {
-                        Icon(Icons.Rounded.Edit, contentDescription = "Edit your name")
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp)) {
+                Box(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Color(0xFFE9F3FF), Color(0xFFE8F7F0))))) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(color = Color.White.copy(alpha = .72f), shape = RoundedCornerShape(16.dp)) {
+                            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = Color(0xFF527B70), modifier = Modifier.padding(10.dp))
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("pa for $userName", style = MaterialTheme.typography.titleLarge, color = Color(0xFF263E3A))
+                            Text("A calm space for what matters", color = Color(0xFF58716C), style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(onClick = { nameDraft = userName; showNameEditor = true }) {
+                            Icon(Icons.Rounded.Edit, contentDescription = "Edit your name", tint = Color(0xFF527B70))
+                        }
                     }
                 }
             }
@@ -798,6 +804,7 @@ private fun AssistantDashboard(
                 Text(SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date()).uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 TimeOfDayHero(userName, usage)
                 DayBriefCard(actions, planTasks)
+                WeeklyMomentumChart(actions)
                 IntentRealityCard(
                     commitments = commitments,
                     planTasks = planTasks,
@@ -846,14 +853,14 @@ private fun AssistantDashboard(
                     }
                 }
             } else if (tab == 1) {
-                Text("PRIVATE CHAT", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Text("Frontier coach over local context", style = MaterialTheme.typography.headlineSmall)
+                Text("Chat", style = MaterialTheme.typography.headlineSmall)
                 Text(chatState, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 lastInferenceStats?.let { stats -> InferenceStatsCard(stats) }
-                Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF10192B))) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("CONTEXT ENGINE", color = Color(0xFF85F5CB), style = MaterialTheme.typography.labelMedium)
-                        Text("Local GenieX curates context; ${frontierModel} writes the reply.", color = Color.White.copy(alpha = .8f))
+                Surface(color = Color(0xFFE8F4EF), shape = RoundedCornerShape(16.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Memory, contentDescription = null, tint = Color(0xFF527B70), modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Local context · $frontierModel", color = Color(0xFF527B70), style = MaterialTheme.typography.bodySmall, maxLines = 1)
                     }
                 }
                 if (chatMessages.isEmpty()) Text("Start a conversation. Messages remain on this device.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -864,45 +871,73 @@ private fun AssistantDashboard(
                 OutlinedTextField(
                     value = chatDraft,
                     onValueChange = { chatDraft = it },
-                    placeholder = { Text("Ask pa, add a goal, or create a plan…") },
-                    minLines = 2,
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    placeholder = { Text("Ask pa or add a plan…", style = MaterialTheme.typography.bodyMedium) },
+                    minLines = 1,
+                    maxLines = 4,
+                    shape = RoundedCornerShape(22.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (chatBusy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        else IconButton(
+                            onClick = { val message = chatDraft; chatDraft = ""; onSendChat(message) },
+                            enabled = chatDraft.isNotBlank()
+                        ) { Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send") }
+                    }
                 )
-                Button(
-                    onClick = { val message = chatDraft; chatDraft = ""; onSendChat(message) },
-                    enabled = chatDraft.isNotBlank() && !chatBusy,
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    shape = RoundedCornerShape(18.dp)
-                ) {
-                    if (chatBusy) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            strokeWidth = 2.5.dp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text("pa is responding with $frontierModel")
-                    } else {
-                        Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Send to frontier")
+            } else if (tab == 2) {
+                Text("Plans", style = MaterialTheme.typography.headlineSmall)
+                Surface(color = Color(0xFFE9EEFF), shape = RoundedCornerShape(20.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Checklist, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text("${plans.size} active plans", style = MaterialTheme.typography.titleMedium)
+                            Text("${planTasks.count { it.status == "done" }} of ${planTasks.size} steps complete", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
-            } else if (tab == 2) {
-                Text("PLANS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Text("Intent and follow-through", style = MaterialTheme.typography.headlineSmall)
+                PlanHealthChart(plans, planTasks)
                 val standaloneGoals = goals.filter { goal -> goal.status == "active" && plans.none { goal.id == "goal:${it.id}" } }
                 Text("Active goals", style = MaterialTheme.typography.titleLarge)
                 if (standaloneGoals.isEmpty()) Text("Tell Chat: “Add a goal to …”", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 standaloneGoals.forEach { goal ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(goal.title, style = MaterialTheme.typography.titleMedium)
-                            Text("Added from Chat", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(12.dp)) {
+                                Icon(Icons.Rounded.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(9.dp))
+                            }
+                            Spacer(Modifier.width(11.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(goal.title, style = MaterialTheme.typography.titleMedium)
+                                Text("Active goal", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
+                Text("Your plans", style = MaterialTheme.typography.titleLarge)
+                Text(planState, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    objectiveDraft,
+                    { objectiveDraft = it },
+                    placeholder = { Text("What do you want to accomplish?") },
+                    minLines = 1,
+                    maxLines = 3,
+                    shape = RoundedCornerShape(22.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { val objective = objectiveDraft; objectiveDraft = ""; onGeneratePlan(objective) },
+                            enabled = objectiveDraft.isNotBlank() && !planState.startsWith("Building")
+                        ) { Icon(Icons.Rounded.AutoAwesome, contentDescription = "Generate plan") }
+                    }
+                )
+                if (plans.isEmpty()) Text("No plans yet. pa will store generated plans here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                plans.forEach { plan ->
+                    PlanCard(plan, planTasks.filter { it.planId == plan.id }, graphEdges, graphNodes, onToggleTask) {
+                        planPendingDelete = plan
+                    }
+                }
+                Divider()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
                         Text("Commitment ledger", style = MaterialTheme.typography.titleLarge)
@@ -932,29 +967,6 @@ private fun AssistantDashboard(
                             onOpenSource = { onOpenCommitmentSource(commitment.meetingId) },
                             onDelete = { commitmentPendingDelete = commitment }
                         )
-                    }
-                }
-                Divider()
-                Text("Generated plans", style = MaterialTheme.typography.titleLarge)
-                Text(planState, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(
-                    objectiveDraft,
-                    { objectiveDraft = it },
-                    label = { Text("What do you want to accomplish?") },
-                    minLines = 2,
-                    shape = RoundedCornerShape(18.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Button(
-                    onClick = { val objective = objectiveDraft; objectiveDraft = ""; onGeneratePlan(objective) },
-                    enabled = objectiveDraft.isNotBlank() && !planState.startsWith("Building"),
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    shape = RoundedCornerShape(18.dp)
-                ) { Text("Generate with pa") }
-                if (plans.isEmpty()) Text("No plans yet. pa will store generated plans here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                plans.forEach { plan ->
-                    PlanCard(plan, planTasks.filter { it.planId == plan.id }, graphEdges, graphNodes, onToggleTask) {
-                        planPendingDelete = plan
                     }
                 }
             } else {
@@ -1219,6 +1231,53 @@ private fun DayBriefCard(actions: List<ActionEntity>, tasks: List<PlanTaskEntity
             BriefList(if (night) "Done today" else "Yesterday", completed.map { it.title }, "No linked activity recorded.")
             Divider()
             BriefList(if (night) "Tomorrow" else "Needs attention today", next.map { it.title }, "Nothing pending — choose a new priority.")
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun WeeklyMomentumChart(actions: List<ActionEntity>) {
+    val days = remember(actions) {
+        (6 downTo 0).map { daysAgo ->
+            val start = Calendar.getInstance().apply {
+                add(Calendar.DAY_OF_YEAR, -daysAgo)
+                set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }
+            val end = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, 1) }
+            SimpleDateFormat("EEE", Locale.getDefault()).format(start.time) to
+                actions.count { it.occurredAt in start.timeInMillis until end.timeInMillis }
+        }
+    }
+    val peak = days.maxOfOrNull { it.second }?.coerceAtLeast(1) ?: 1
+    val total = days.sumOf { it.second }
+
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+                Column {
+                    Text("Weekly momentum", style = MaterialTheme.typography.titleLarge)
+                    Text("Curated actions across your week", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("$total actions", color = Color(0xFF527B70), style = MaterialTheme.typography.labelLarge)
+            }
+            Canvas(Modifier.fillMaxWidth().height(112.dp)) {
+                val slot = size.width / days.size
+                val baseline = size.height - 3.dp.toPx()
+                drawLine(Color(0xFFDDE8E3), androidx.compose.ui.geometry.Offset(0f, baseline), androidx.compose.ui.geometry.Offset(size.width, baseline), 1.dp.toPx())
+                days.forEachIndexed { index, day ->
+                    val height = if (day.second == 0) 4.dp.toPx() else (baseline - 8.dp.toPx()) * day.second / peak
+                    val width = slot * .48f
+                    drawRoundRect(
+                        brush = Brush.verticalGradient(listOf(Color(0xFF82B7A8), Color(0xFF527B70))),
+                        topLeft = androidx.compose.ui.geometry.Offset(index * slot + (slot - width) / 2, baseline - height),
+                        size = androidx.compose.ui.geometry.Size(width, height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(width / 2)
+                    )
+                }
+            }
+            Row(Modifier.fillMaxWidth()) {
+                days.forEach { day -> Text(day.first, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall) }
+            }
         }
     }
 }
@@ -1551,16 +1610,61 @@ private fun ChatLoadingBubble(frontierModel: String) {
 @androidx.compose.runtime.Composable
 private fun ChatBubble(message: ChatMessageEntity) {
     val assistant = message.role == "assistant"
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (assistant) Arrangement.Start else Arrangement.End) {
+        Card(
+            colors = androidx.compose.material3.CardDefaults.cardColors(
+                containerColor = if (assistant) Color(0xFFECF4F0) else MaterialTheme.colorScheme.primaryContainer
+            ),
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth(.88f)
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(if (assistant) "PA" else "YOU", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                Text(message.content.replace("**", "").replace(CHAT_MARKDOWN_PREFIX, "• "), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun PlanHealthChart(plans: List<PlanEntity>, tasks: List<PlanTaskEntity>) {
+    if (plans.isEmpty()) return
     Card(
-        colors = androidx.compose.material3.CardDefaults.cardColors(
-            containerColor = if (assistant) Color(0xFFE9EEFF) else MaterialTheme.colorScheme.primaryContainer
-        ),
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFFF0F3FB))
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(if (assistant) "PA" else "YOU", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
-            Text(message.content.replace("**", "").replace(CHAT_MARKDOWN_PREFIX, "• "))
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("Plan health", style = MaterialTheme.typography.titleLarge)
+            plans.take(4).forEach { plan ->
+                val planTasks = tasks.filter { it.planId == plan.id }
+                val done = planTasks.count { it.status == "done" }
+                val blocked = planTasks.count { it.status == "blocked" }
+                val remaining = (planTasks.size - done - blocked).coerceAtLeast(0)
+                val total = planTasks.size.coerceAtLeast(1)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(plan.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, modifier = Modifier.weight(1f))
+                        Text("$done/${planTasks.size}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                    }
+                    Canvas(Modifier.fillMaxWidth().height(12.dp)) {
+                        var x = 0f
+                        listOf(done to Color(0xFF5C9787), remaining to Color(0xFFAEBCE8), blocked to Color(0xFFE39BA4)).forEach { (count, color) ->
+                            if (count > 0) {
+                                val segmentWidth = size.width * count / total
+                                drawRoundRect(color, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Size((segmentWidth - 3.dp.toPx()).coerceAtLeast(2.dp.toPx()), size.height), androidx.compose.ui.geometry.CornerRadius(size.height / 2))
+                                x += segmentWidth
+                            }
+                        }
+                    }
+                    Text("$remaining remaining${if (blocked > 0) " · $blocked blocked" else ""}", color = if (blocked > 0) Color(0xFFB24C5A) else MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("● Done", color = Color(0xFF5C9787), style = MaterialTheme.typography.labelSmall)
+                Text("● Remaining", color = Color(0xFF7184C7), style = MaterialTheme.typography.labelSmall)
+                Text("● Blocked", color = Color(0xFFB24C5A), style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
@@ -1574,6 +1678,8 @@ private fun PlanCard(
     onToggleTask: (PlanTaskEntity) -> Unit,
     onDelete: () -> Unit
 ) {
+    val completed = tasks.count { it.status == "done" }
+    val progress = if (tasks.isEmpty()) 0f else completed.toFloat() / tasks.size
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1583,6 +1689,11 @@ private fun PlanCard(
                 }
             }
             Text(plan.objective, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Progress", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text("$completed/${tasks.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
             tasks.forEach { task ->
                 val prerequisites = edges.filter { it.type == "requires" && it.fromId == task.id }
                 Surface(onClick = { onToggleTask(task) }, color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
