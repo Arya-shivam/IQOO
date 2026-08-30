@@ -737,8 +737,6 @@ private fun AssistantDashboard(
                     Triple("Home", Icons.Rounded.Home, "Home"),
                     Triple("Chat", Icons.Rounded.ChatBubble, "Chat"),
                     Triple("Plans", Icons.Rounded.Checklist, "Plans"),
-                    Triple("Memory", Icons.Rounded.Memory, "Memory"),
-                    Triple("Graph", Icons.Rounded.TrackChanges, "Graph"),
                     Triple("Settings", Icons.Rounded.Settings, "Settings")
                 )
                 destinations.forEachIndexed { index, item ->
@@ -920,38 +918,6 @@ private fun AssistantDashboard(
                         planPendingDelete = plan
                     }
                 }
-            } else if (tab == 3) {
-                Text("MEMORY", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Text("Inspectable local knowledge", style = MaterialTheme.typography.headlineSmall)
-                OutlinedTextField(memoryDraft, { memoryDraft = it }, label = { Text("Add something pa should remember") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp))
-                Button(onClick = { val value = memoryDraft; memoryDraft = ""; onAddMemory(value) }, enabled = memoryDraft.isNotBlank(), modifier = Modifier.fillMaxWidth().height(50.dp)) { Text("Remember on this device") }
-                memories.forEach { memory -> MemoryCard(memory, onArchiveMemory) }
-                Text("MEETINGS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("New meeting")
-                }
-                meetings.forEach { meeting ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(
-                                Modifier.weight(1f).clickable { onOpen(meeting) }.padding(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(meeting.title, style = MaterialTheme.typography.titleMedium)
-                                Text(if (meeting.notes.isBlank()) "No summary yet - tap to open" else meeting.notes.take(130), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            if (meeting.notes.isNotBlank()) {
-                                IconButton(onClick = { meetingPendingSummaryDelete = meeting }) {
-                                    Icon(Icons.Rounded.Delete, contentDescription = "Delete meeting summary")
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if (tab == 4) {
-                GraphMemoryScreen(goals, plans, planTasks, actions, graphEdges, graphNodes, memories)
             } else {
                 Text("SETTINGS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 Text("Models, data and permissions", style = MaterialTheme.typography.headlineSmall)
