@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,10 +18,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
@@ -67,6 +70,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -80,6 +85,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.collectAsState
@@ -95,6 +101,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.core.content.ContextCompat
 import com.opengranola.android.ai.GenieXLocalLlmProvider
@@ -151,6 +167,13 @@ private val CHAT_WRITE_INTENT = Regex(
     RegexOption.IGNORE_CASE
 )
 
+private enum class DashboardDestination(val label: String, val icon: ImageVector) {
+    HOME("Home", Icons.Rounded.Home),
+    CHAT("Chat", Icons.Rounded.ChatBubble),
+    PLANS("Plans", Icons.Rounded.Checklist),
+    SETTINGS("Settings", Icons.Rounded.Settings)
+}
+
 private fun chatWriteIntent(message: String): Pair<String, String>? =
     CHAT_WRITE_INTENT.matchEntire(message)?.destructured?.let { (type, objective) -> type.lowercase() to objective.trim() }
         ?.takeIf { it.second.isNotBlank() }
@@ -189,7 +212,10 @@ class MainActivity : ComponentActivity() {
         val graphNodes by viewModel.graphNodes.collectAsState()
         val demoNodeCount by viewModel.demoNodeCount.collectAsState()
         val demoState by viewModel.demoState.collectAsState()
-        var selectedId by remember { mutableStateOf<String?>(null) }
+        var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+        var dashboardDestinationName by rememberSaveable { mutableStateOf(DashboardDestination.HOME.name) }
+        val dashboardDestination = runCatching { DashboardDestination.valueOf(dashboardDestinationName) }
+            .getOrDefault(DashboardDestination.HOME)
         val scope = rememberCoroutineScope()
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
         val frontier = remember { OpenRouterCoachClient(this@MainActivity) }
@@ -216,10 +242,14 @@ class MainActivity : ComponentActivity() {
         var streamingResponse by remember { mutableStateOf("") }
         var lastInferenceStats by remember { mutableStateOf<InferenceStats?>(null) }
         var planState by remember { mutableStateOf("Describe an objective and pa will build a plan") }
+        var planBusy by remember { mutableStateOf(false) }
         var briefingBusy by remember { mutableStateOf(false) }
         var briefingState by remember { mutableStateOf("Connect intention with how today is unfolding") }
         var calendarSnapshot by remember { mutableStateOf(CalendarSnapshot()) }
         var calendarRefresh by remember { mutableIntStateOf(0) }
+        var calendarBusy by remember { mutableStateOf(false) }
+        var usageBusy by remember { mutableStateOf(false) }
+        var summaryBusy by remember { mutableStateOf(false) }
         val transcriber = remember {
             LiveTranscriber(
                 this@MainActivity,
@@ -271,9 +301,14 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.RequestPermission()
         ) { calendarRefresh++ }
         LaunchedEffect(calendarRefresh) {
-            val snapshot = withContext(Dispatchers.IO) { CalendarRepository(this@MainActivity).upcoming() }
-            calendarSnapshot = snapshot
-            viewModel.recordCalendar(snapshot)
+            calendarBusy = true
+            try {
+                val snapshot = withContext(Dispatchers.IO) { CalendarRepository(this@MainActivity).upcoming() }
+                calendarSnapshot = snapshot
+                viewModel.recordCalendar(snapshot)
+            } finally {
+                calendarBusy = false
+            }
         }
 
         MaterialTheme {
@@ -380,11 +415,18 @@ class MainActivity : ComponentActivity() {
                         calendarRefresh++
                     }
                     LaunchedEffect(usageRefresh) {
-                        val snapshot = withContext(Dispatchers.IO) { UsageStatsRepository(this@MainActivity).today() }
-                        usage = snapshot
-                        viewModel.recordUsage(snapshot)
+                        usageBusy = true
+                        try {
+                            val snapshot = withContext(Dispatchers.IO) { UsageStatsRepository(this@MainActivity).today() }
+                            usage = snapshot
+                            viewModel.recordUsage(snapshot)
+                        } finally {
+                            usageBusy = false
+                        }
                     }
                     AssistantDashboard(
+                        destination = dashboardDestination,
+                        onDestinationChange = { dashboardDestinationName = it.name },
                         meetings = meetings,
                         userName = userName,
                         usage = usage,
@@ -410,8 +452,11 @@ class MainActivity : ComponentActivity() {
                         streamingResponse = streamingResponse,
                         lastInferenceStats = lastInferenceStats,
                         planState = planState,
+                        planBusy = planBusy,
                         briefingState = briefingState,
                         briefingBusy = briefingBusy,
+                        usageBusy = usageBusy,
+                        calendarBusy = calendarBusy,
                         computeUnit = selectedComputeUnit,
                         frontierConfigured = frontierConfigured,
                         frontierModel = frontierModel,
@@ -486,14 +531,19 @@ class MainActivity : ComponentActivity() {
                             if (objective.isNotBlank() && !frontierConfigured) {
                                 planState = "Connect OpenRouter in Frontier settings first"
                             } else if (objective.isNotBlank()) scope.launch {
-                                runCatching {
-                                    planState = "Sending curated context to frontier…"
-                                    val context = viewModel.buildContext("plan generation", objective)
-                                    frontier.generatePlan(objective.trim(), context.text)
-                                }.onSuccess { generated ->
-                                    viewModel.saveGeneratedPlan(generated)
-                                    planState = "Plan stored on this device"
-                                }.onFailure { error -> planState = "Plan failed: ${error.message ?: "check the local model"}" }
+                                planBusy = true
+                                try {
+                                    runCatching {
+                                        planState = "Sending curated context to frontier…"
+                                        val context = viewModel.buildContext("plan generation", objective)
+                                        frontier.generatePlan(objective.trim(), context.text)
+                                    }.onSuccess { generated ->
+                                        viewModel.saveGeneratedPlan(generated)
+                                        planState = "Plan stored on this device"
+                                    }.onFailure { error -> planState = "Plan failed: ${error.message ?: "check the local model"}" }
+                                } finally {
+                                    planBusy = false
+                                }
                             }
                         },
                         onGenerateBriefing = {
@@ -541,6 +591,7 @@ class MainActivity : ComponentActivity() {
                         liveTranscript = liveTranscript,
                         transcriptionState = transcriptionState,
                         summaryState = summaryState,
+                        summaryBusy = summaryBusy,
                         latestSummary = latestSummary,
                         onBack = { meeting ->
                             viewModel.save(meeting)
@@ -574,48 +625,58 @@ class MainActivity : ComponentActivity() {
                             viewModel.save(completed)
                             summaryState = "Summarizing locally…"
                             scope.launch {
-                                runCatching {
-                                    summarizeLongMeeting(llm, completed.transcript, completed.notes) { summaryState = it }
-                                }.onSuccess { summary ->
-                                    val summarized = completed.copy(notes = summary)
-                                    viewModel.save(summarized)
-                                    viewModel.rememberMeeting(summarized)
-                                    latestSummary = summary
-                                    summaryState = "Extracting commitments…"
+                                summaryBusy = true
+                                try {
                                     runCatching {
-                                        llm.extractCommitments(summarized.title, summarized.transcript, summary)
-                                    }.onSuccess { extracted ->
-                                        viewModel.replaceMeetingCommitments(summarized, extracted)
-                                        summaryState = "Summary ready · ${extracted.size} commitments found"
-                                    }.onFailure {
-                                        summaryState = "Summary ready · commitment extraction unavailable"
+                                        summarizeLongMeeting(llm, completed.transcript, completed.notes) { summaryState = it }
+                                    }.onSuccess { summary ->
+                                        val summarized = completed.copy(notes = summary)
+                                        viewModel.save(summarized)
+                                        viewModel.rememberMeeting(summarized)
+                                        latestSummary = summary
+                                        summaryState = "Extracting commitments…"
+                                        runCatching {
+                                            llm.extractCommitments(summarized.title, summarized.transcript, summary)
+                                        }.onSuccess { extracted ->
+                                            viewModel.replaceMeetingCommitments(summarized, extracted)
+                                            summaryState = "Summary ready · ${extracted.size} commitments found"
+                                        }.onFailure {
+                                            summaryState = "Summary ready · commitment extraction unavailable"
+                                        }
+                                    }.onFailure { error ->
+                                        summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
                                     }
-                                }.onFailure { error ->
-                                    summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
+                                } finally {
+                                    summaryBusy = false
                                 }
                             }
                         },
                         onSummarize = { meeting ->
                             scope.launch {
+                                summaryBusy = true
                                 summaryState = "Starting local model…"
-                                runCatching {
-                                    summarizeLongMeeting(llm, meeting.transcript, meeting.notes) { summaryState = it }
-                                }.onSuccess { generated ->
-                                    val summarized = meeting.copy(notes = generated)
-                                    viewModel.save(summarized)
-                                    viewModel.rememberMeeting(summarized)
-                                    latestSummary = generated
-                                    summaryState = "Extracting commitments…"
+                                try {
                                     runCatching {
-                                        llm.extractCommitments(summarized.title, summarized.transcript, generated)
-                                    }.onSuccess { extracted ->
-                                        viewModel.replaceMeetingCommitments(summarized, extracted)
-                                        summaryState = "Summary ready · ${extracted.size} commitments found"
-                                    }.onFailure {
-                                        summaryState = "Summary ready · commitment extraction unavailable"
+                                        summarizeLongMeeting(llm, meeting.transcript, meeting.notes) { summaryState = it }
+                                    }.onSuccess { generated ->
+                                        val summarized = meeting.copy(notes = generated)
+                                        viewModel.save(summarized)
+                                        viewModel.rememberMeeting(summarized)
+                                        latestSummary = generated
+                                        summaryState = "Extracting commitments…"
+                                        runCatching {
+                                            llm.extractCommitments(summarized.title, summarized.transcript, generated)
+                                        }.onSuccess { extracted ->
+                                            viewModel.replaceMeetingCommitments(summarized, extracted)
+                                            summaryState = "Summary ready · ${extracted.size} commitments found"
+                                        }.onFailure {
+                                            summaryState = "Summary ready · commitment extraction unavailable"
+                                        }
+                                    }.onFailure { error ->
+                                        summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
                                     }
-                                }.onFailure { error ->
-                                    summaryState = "Summary failed: ${error.message ?: "check model and device support"}"
+                                } finally {
+                                    summaryBusy = false
                                 }
                             }
                         }
@@ -628,6 +689,8 @@ class MainActivity : ComponentActivity() {
 
 @androidx.compose.runtime.Composable
 private fun AssistantDashboard(
+    destination: DashboardDestination,
+    onDestinationChange: (DashboardDestination) -> Unit,
     meetings: List<Meeting>,
     userName: String,
     usage: UsageSnapshot,
@@ -653,8 +716,11 @@ private fun AssistantDashboard(
     lastInferenceStats: InferenceStats?,
     streamingResponse: String,
     planState: String,
+    planBusy: Boolean,
     briefingState: String,
     briefingBusy: Boolean,
+    usageBusy: Boolean,
+    calendarBusy: Boolean,
     computeUnit: String,
     frontierConfigured: Boolean,
     frontierModel: String,
@@ -684,17 +750,48 @@ private fun AssistantDashboard(
     onOpenCommitmentSource: (String) -> Unit,
     onNew: () -> Unit
 ) {
-    var tab by remember { mutableIntStateOf(0) }
-    var chatDraft by remember { mutableStateOf("") }
-    var objectiveDraft by remember { mutableStateOf("") }
-    var memoryDraft by remember { mutableStateOf("") }
-    var showNameEditor by remember { mutableStateOf(false) }
+    val tab = destination.ordinal
+    var chatDraft by rememberSaveable { mutableStateOf("") }
+    var objectiveDraft by rememberSaveable { mutableStateOf("") }
+    var memoryDraft by rememberSaveable { mutableStateOf("") }
+    var showNameEditor by rememberSaveable { mutableStateOf(false) }
     var nameDraft by remember(userName) { mutableStateOf(userName) }
     var planPendingDelete by remember { mutableStateOf<PlanEntity?>(null) }
     var meetingPendingSummaryDelete by remember { mutableStateOf<Meeting?>(null) }
     var commitmentPendingDelete by remember { mutableStateOf<CommitmentEntity?>(null) }
     val dashboardScrollStates = listOf(rememberScrollState(), rememberScrollState(), rememberScrollState(), rememberScrollState())
     val dashboardScrollState = dashboardScrollStates[tab]
+    val focusManager = LocalFocusManager.current
+    val submitChat: () -> Unit = {
+        val message = chatDraft.trim()
+        if (message.isNotBlank() && !chatBusy) {
+            if (frontierConfigured || chatWriteIntent(message)?.first == "goal") chatDraft = ""
+            onSendChat(message)
+            focusManager.clearFocus()
+        }
+    }
+    val submitPlan: () -> Unit = {
+        val objective = objectiveDraft.trim()
+        if (objective.isNotBlank() && !planBusy) {
+            if (frontierConfigured) objectiveDraft = ""
+            onGeneratePlan(objective)
+            focusManager.clearFocus()
+        }
+    }
+    val activeStatus = when {
+        chatBusy -> chatState
+        planBusy -> planState
+        briefingBusy -> briefingState
+        modelState.startsWith("Loading") -> modelState
+        calendarBusy -> "Refreshing calendar…"
+        usageBusy -> "Refreshing app usage…"
+        demoState.startsWith("Building") || demoState.startsWith("Removing") -> demoState
+        else -> null
+    }
+
+    BackHandler(enabled = destination != DashboardDestination.HOME) {
+        onDestinationChange(DashboardDestination.HOME)
+    }
 
     LaunchedEffect(tab, chatBusy, chatMessages.size) {
         if (tab == 1 && (chatBusy || chatMessages.isNotEmpty())) {
@@ -758,29 +855,42 @@ private fun AssistantDashboard(
             dismissButton = { TextButton(onClick = { commitmentPendingDelete = null }) { Text("Cancel") } }
         )
     }
+    BoxWithConstraints {
+        val useNavigationRail = maxWidth >= 600.dp
     Scaffold(
         containerColor = Color(0xFFF7F9F7),
+        topBar = {
+            if (activeStatus != null) OperationStatusBanner(activeStatus)
+        },
         bottomBar = {
-            NavigationBar(containerColor = Color(0xFFF7F9F7)) {
-                val destinations = listOf(
-                    Triple("Home", Icons.Rounded.Home, "Home"),
-                    Triple("Chat", Icons.Rounded.ChatBubble, "Chat"),
-                    Triple("Plans", Icons.Rounded.Checklist, "Plans"),
-                    Triple("Settings", Icons.Rounded.Settings, "Settings")
-                )
-                destinations.forEachIndexed { index, item ->
+            if (!useNavigationRail) NavigationBar(containerColor = Color(0xFFF7F9F7)) {
+                DashboardDestination.entries.forEach { item ->
                     NavigationBarItem(
-                        selected = tab == index,
-                        onClick = { tab = index },
-                        icon = { Icon(item.second, contentDescription = item.third) },
-                        label = { Text(item.first) }
+                        selected = destination == item,
+                        onClick = { onDestinationChange(item) },
+                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        label = { Text(item.label) }
                     )
                 }
             }
         }
     ) { insets ->
+        Row(Modifier.fillMaxSize().padding(insets)) {
+            if (useNavigationRail) {
+                NavigationRail(containerColor = Color(0xFFF7F9F7)) {
+                    Spacer(Modifier.height(12.dp))
+                    DashboardDestination.entries.forEach { item ->
+                        NavigationRailItem(
+                            selected = destination == item,
+                            onClick = { onDestinationChange(item) },
+                            icon = { Icon(item.icon, contentDescription = item.label) },
+                            label = { Text(item.label) }
+                        )
+                    }
+                }
+            }
         Column(
-            Modifier.fillMaxSize().padding(insets).verticalScroll(dashboardScrollState).padding(horizontal = 20.dp, vertical = 14.dp),
+            Modifier.weight(1f).fillMaxSize().verticalScroll(dashboardScrollState).padding(horizontal = 20.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(26.dp)) {
@@ -826,7 +936,8 @@ private fun AssistantDashboard(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Most used today", style = MaterialTheme.typography.titleLarge)
                         TextButton(onClick = onRefreshUsage) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = null)
+                            if (usageBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Rounded.Refresh, contentDescription = null)
                             Spacer(Modifier.width(6.dp))
                             Text("Refresh")
                         }
@@ -875,11 +986,18 @@ private fun AssistantDashboard(
                     minLines = 1,
                     maxLines = 4,
                     shape = RoundedCornerShape(22.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { submitChat() }),
+                    modifier = Modifier.fillMaxWidth().imePadding().onPreviewKeyEvent { event ->
+                        if (event.key == Key.Enter && !event.isShiftPressed) {
+                            if (event.type == KeyEventType.KeyDown) submitChat()
+                            true
+                        } else false
+                    },
                     trailingIcon = {
                         if (chatBusy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         else IconButton(
-                            onClick = { val message = chatDraft; chatDraft = ""; onSendChat(message) },
+                            onClick = submitChat,
                             enabled = chatDraft.isNotBlank()
                         ) { Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Send") }
                     }
@@ -923,11 +1041,19 @@ private fun AssistantDashboard(
                     minLines = 1,
                     maxLines = 3,
                     shape = RoundedCornerShape(22.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { submitPlan() }),
+                    modifier = Modifier.fillMaxWidth().imePadding().onPreviewKeyEvent { event ->
+                        if (event.key == Key.Enter && !event.isShiftPressed) {
+                            if (event.type == KeyEventType.KeyDown) submitPlan()
+                            true
+                        } else false
+                    },
                     trailingIcon = {
-                        IconButton(
-                            onClick = { val objective = objectiveDraft; objectiveDraft = ""; onGeneratePlan(objective) },
-                            enabled = objectiveDraft.isNotBlank() && !planState.startsWith("Building")
+                        if (planBusy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        else IconButton(
+                            onClick = submitPlan,
+                            enabled = objectiveDraft.isNotBlank()
                         ) { Icon(Icons.Rounded.AutoAwesome, contentDescription = "Generate plan") }
                     }
                 )
@@ -992,11 +1118,13 @@ private fun AssistantDashboard(
                     action = if (notificationAccessEnabled) "Settings" else "Enable",
                     onClick = onNotificationPermission
                 )
-                CalendarSection(calendarSnapshot, onCalendarPermission, onRefreshCalendar)
+                CalendarSection(calendarSnapshot, calendarBusy, onCalendarPermission, onRefreshCalendar)
                 Text("SHOWCASE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 ShowcaseCard(demoLoaded, demoState, onLoadDemo, onClearDemo)
             }
         }
+    }
+}
     }
 }
 
@@ -1015,7 +1143,28 @@ private fun GenieXModelPicker(
         onDismissRequest = onDismiss,
         title = { Text("GenieX local models") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (status != null) {
+                    Surface(color = Color(0xFFE8F4EF), shape = RoundedCornerShape(14.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                if (status.contains("Downloading") || status.contains("Checking")) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                }
+                                Text(status, color = Color(0xFF315F53), style = MaterialTheme.typography.labelMedium)
+                            }
+                            if (status.contains("Downloading")) {
+                                val percent = Regex("(\\d+)%").find(status)?.groupValues?.getOrNull(1)?.toFloatOrNull()
+                                if (percent != null) {
+                                    LinearProgressIndicator(progress = { (percent / 100f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                                } else {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                }
+                            }
+                        }
+                    }
+                }
+                Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Download once, then run meeting summaries privately on-device.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("COMPUTE TARGET", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -1052,7 +1201,7 @@ private fun GenieXModelPicker(
                         }
                     }
                 }
-                if (status != null) Text(status, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
@@ -1138,6 +1287,7 @@ private fun positiveMessage(userName: String, day: Int): String {
 @androidx.compose.runtime.Composable
 private fun CalendarSection(
     snapshot: CalendarSnapshot,
+    busy: Boolean,
     onPermission: () -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -1171,7 +1321,10 @@ private fun CalendarSection(
             Text("Upcoming calendar", style = MaterialTheme.typography.titleLarge)
             Text("Local and device-synced calendars", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
         }
-        IconButton(onClick = onRefresh) { Icon(Icons.Rounded.Sync, contentDescription = "Refresh calendars") }
+        IconButton(onClick = onRefresh, enabled = !busy) {
+            if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Rounded.Sync, contentDescription = "Refresh calendars")
+        }
     }
     if (snapshot.events.isEmpty()) {
         Text("No events found in the next seven days.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1583,6 +1736,31 @@ private fun InferenceStatsCard(stats: InferenceStats) {
 }
 
 @androidx.compose.runtime.Composable
+private fun OperationStatusBanner(message: String) {
+    Surface(
+        color = Color(0xFF10192B),
+        shadowElevation = 6.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 11.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.5.dp,
+                color = Color(0xFF85F5CB)
+            )
+            Column(Modifier.weight(1f)) {
+                Text("pa is working", color = Color.White, style = MaterialTheme.typography.labelLarge)
+                Text(message, color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.bodySmall, maxLines = 2)
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
 private fun ChatLoadingBubble(frontierModel: String) {
     Card(
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFFE9EEFF)),
@@ -1940,20 +2118,26 @@ private fun MeetingEditor(
     liveTranscript: String?,
     transcriptionState: String,
     summaryState: String,
+    summaryBusy: Boolean,
     latestSummary: String?,
     onBack: (Meeting) -> Unit,
     onRecord: () -> Unit,
     onStopRecording: (Meeting) -> Unit,
     onSummarize: (Meeting) -> Unit
 ) {
-    var title by remember(meeting.id) { mutableStateOf(meeting.title) }
-    var transcript by remember(meeting.id) { mutableStateOf(meeting.transcript) }
-    var notes by remember(meeting.id) { mutableStateOf(meeting.notes) }
+    var title by rememberSaveable(meeting.id) { mutableStateOf(meeting.title) }
+    var transcript by rememberSaveable(meeting.id) { mutableStateOf(meeting.transcript) }
+    var notes by rememberSaveable(meeting.id) { mutableStateOf(meeting.notes) }
+    val closeEditor = { onBack(meeting.copy(title = title, transcript = transcript, notes = notes)) }
+    BackHandler(onBack = closeEditor)
     LaunchedEffect(liveTranscript) {
         if (liveTranscript != null && liveTranscript.isNotBlank()) transcript = liveTranscript
     }
     LaunchedEffect(latestSummary) {
         if (!latestSummary.isNullOrBlank()) notes = latestSummary
+    }
+    LaunchedEffect(meeting.notes) {
+        if (meeting.notes.isNotBlank() && meeting.notes != notes) notes = meeting.notes
     }
 
     Box(
@@ -1962,12 +2146,17 @@ private fun MeetingEditor(
         )
     ) {
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(
+                start = 18.dp,
+                end = 18.dp,
+                top = if (summaryBusy) 76.dp else 12.dp,
+                bottom = 12.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 TextButton(
-                    onClick = { onBack(meeting.copy(title = title, transcript = transcript, notes = notes)) },
+                    onClick = closeEditor,
                     modifier = Modifier.height(44.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp)
                 ) {
@@ -2078,17 +2267,26 @@ private fun MeetingEditor(
                     )
                     Button(
                         onClick = { onSummarize(meeting.copy(title = title, transcript = transcript, notes = notes)) },
-                        enabled = transcript.isNotBlank(),
+                        enabled = transcript.isNotBlank() && !summaryBusy,
                         shape = RoundedCornerShape(18.dp),
                         modifier = Modifier.fillMaxWidth().height(56.dp)
                     ) {
-                        Icon(Icons.Rounded.Summarize, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Synthesize meeting")
+                        if (summaryBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                            Spacer(Modifier.width(9.dp))
+                            Text(summaryState)
+                        } else {
+                            Icon(Icons.Rounded.Summarize, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Synthesize meeting")
+                        }
                     }
                 }
             }
             Spacer(Modifier.height(12.dp))
+        }
+        if (summaryBusy) {
+            Box(Modifier.align(Alignment.TopCenter)) { OperationStatusBanner(summaryState) }
         }
     }
 }
