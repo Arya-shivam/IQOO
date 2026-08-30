@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.background
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Event
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedButton
@@ -91,6 +93,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.core.content.ContextCompat
@@ -110,6 +113,10 @@ import com.opengranola.android.data.PlanTaskEntity
 import com.opengranola.android.data.ChatMessageEntity
 import com.opengranola.android.data.CommitmentEntity
 import com.opengranola.android.data.DailyInsightEntity
+import com.opengranola.android.data.GoalEntity
+import com.opengranola.android.data.ActionEntity
+import com.opengranola.android.data.GraphEdgeEntity
+import com.opengranola.android.data.GraphNodeEntity
 import com.opengranola.android.model.Meeting
 import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
@@ -167,6 +174,12 @@ class MainActivity : ComponentActivity() {
         val userName by viewModel.userName.collectAsState()
         val commitments by viewModel.commitments.collectAsState()
         val dailyInsights by viewModel.dailyInsights.collectAsState()
+        val goals by viewModel.goals.collectAsState()
+        val actions by viewModel.actions.collectAsState()
+        val graphEdges by viewModel.graphEdges.collectAsState()
+        val graphNodes by viewModel.graphNodes.collectAsState()
+        val demoNodeCount by viewModel.demoNodeCount.collectAsState()
+        val demoState by viewModel.demoState.collectAsState()
         var selectedId by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         val llm = remember { GenieXLocalLlmProvider(this@MainActivity) }
@@ -372,6 +385,12 @@ class MainActivity : ComponentActivity() {
                         recentNotifications = recentNotifications,
                         notificationsToday = notificationsToday,
                         memories = memories,
+                        goals = goals,
+                        actions = actions,
+                        graphEdges = graphEdges,
+                        graphNodes = graphNodes,
+                        demoLoaded = demoNodeCount > 0,
+                        demoState = demoState,
                         plans = plans,
                         planTasks = planTasks,
                         commitments = commitments,
@@ -398,6 +417,8 @@ class MainActivity : ComponentActivity() {
                             frontierModelDraft = frontierModel
                             showFrontierSettings = true
                         },
+                        onLoadDemo = viewModel::loadDemoData,
+                        onClearDemo = viewModel::clearDemoData,
                         onRefreshUsage = { usageRefresh++ },
                         onSendChat = { message ->
                             if (message.isNotBlank() && !frontierConfigured) {
@@ -411,7 +432,7 @@ class MainActivity : ComponentActivity() {
                                 try {
                                     chatState = "Retrieving local context…"
                                     val contextAndHistory = withContext(Dispatchers.IO) {
-                                        val context = viewModel.buildContext("interactive chat")
+                                        val context = viewModel.buildContext("interactive chat", message.trim())
                                         val history = chatMessages.takeLast(4).map { AssistantTurn(it.role, it.content) }
                                         viewModel.saveChat("user", message.trim())
                                         context to history
@@ -587,6 +608,12 @@ private fun AssistantDashboard(
     recentNotifications: List<NotificationEntity>,
     notificationsToday: Int,
     memories: List<MemoryEntity>,
+    goals: List<GoalEntity>,
+    actions: List<ActionEntity>,
+    graphEdges: List<GraphEdgeEntity>,
+    graphNodes: List<GraphNodeEntity>,
+    demoLoaded: Boolean,
+    demoState: String,
     plans: List<PlanEntity>,
     planTasks: List<PlanTaskEntity>,
     commitments: List<CommitmentEntity>,
@@ -609,6 +636,8 @@ private fun AssistantDashboard(
     onRefreshCalendar: () -> Unit,
     onLoadModel: () -> Unit,
     onFrontierSettings: () -> Unit,
+    onLoadDemo: () -> Unit,
+    onClearDemo: () -> Unit,
     onRefreshUsage: () -> Unit,
     onSendChat: (String) -> Unit,
     onGeneratePlan: (String) -> Unit,
@@ -641,6 +670,8 @@ private fun AssistantDashboard(
         if (tab == 1 && (chatBusy || chatMessages.isNotEmpty())) {
             delay(120)
             dashboardScrollState.animateScrollTo(dashboardScrollState.maxValue)
+        } else if (tab != 1) {
+            dashboardScrollState.scrollTo(0)
         }
     }
 
@@ -706,7 +737,9 @@ private fun AssistantDashboard(
                     Triple("Home", Icons.Rounded.Home, "Home"),
                     Triple("Chat", Icons.Rounded.ChatBubble, "Chat"),
                     Triple("Plans", Icons.Rounded.Checklist, "Plans"),
-                    Triple("Memory", Icons.Rounded.Memory, "Memory")
+                    Triple("Memory", Icons.Rounded.Memory, "Memory"),
+                    Triple("Graph", Icons.Rounded.TrackChanges, "Graph"),
+                    Triple("Settings", Icons.Rounded.Settings, "Settings")
                 )
                 destinations.forEachIndexed { index, item ->
                     NavigationBarItem(
@@ -738,6 +771,7 @@ private fun AssistantDashboard(
             if (tab == 0) {
                 Text(SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date()).uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 TimeOfDayHero(userName, usage)
+                DayBriefCard(actions, planTasks)
                 IntentRealityCard(
                     commitments = commitments,
                     planTasks = planTasks,
@@ -749,60 +783,29 @@ private fun AssistantDashboard(
                     onGenerate = onGenerateBriefing,
                     onRate = onRateDailyInsight
                 )
-                CalendarSection(
-                    snapshot = calendarSnapshot,
-                    onPermission = onCalendarPermission,
-                    onRefresh = onRefreshCalendar
-                )
-                if (!usage.hasPermission) {
-                    Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer), onClick = onUsagePermission) {
-                        Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Rounded.Insights, contentDescription = null)
-                            Column(Modifier.weight(1f)) {
-                                Text("Turn on usage insights", style = MaterialTheme.typography.titleMedium)
-                                Text("Allow Usage Access to see your real phone patterns. Nothing leaves this device.", color = MaterialTheme.colorScheme.onTertiaryContainer, style = MaterialTheme.typography.bodySmall)
-                            }
-                            Text("Open", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
-                }
-                ModelCard(modelName = modelName, modelState = modelState, computeUnit = computeUnit, onLoadModel = onLoadModel)
-                FrontierCard(configured = frontierConfigured, model = frontierModel, onClick = onFrontierSettings)
+                TodayTaskList(planTasks, onToggleTask)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     StatCard("FOCUS", if (usage.hasPermission) formatMinutes((usage.totalMinutes * .36f).toInt()) else "—", "estimated", Modifier.weight(1f))
                     StatCard("APPS USED", if (usage.hasPermission) usage.pickups.toString() else "—", "today", Modifier.weight(1f))
                     StatCard("ALERTS", notificationsToday.toString(), "today", Modifier.weight(1f))
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Most used today", style = MaterialTheme.typography.titleLarge)
-                    TextButton(onClick = onRefreshUsage) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Refresh")
-                    }
-                }
-                if (usage.apps.isEmpty()) {
-                    Text("Your app patterns will appear here once Usage Access is enabled.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    usage.apps.forEach { UsageRow(it) }
-                }
-                Text("Recent signals", style = MaterialTheme.typography.titleLarge)
-                if (!notificationAccessEnabled) {
-                    Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer), onClick = onNotificationPermission) {
-                        Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Rounded.Notifications, contentDescription = null)
-                            Column(Modifier.weight(1f)) {
-                                Text("Connect notifications", style = MaterialTheme.typography.titleMedium)
-                                Text("Read-only, redacted notification context helps your assistant understand what needs attention.", color = MaterialTheme.colorScheme.onSecondaryContainer, style = MaterialTheme.typography.bodySmall)
-                            }
-                            Text("Enable", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                if (usage.hasPermission) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Most used today", style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = onRefreshUsage) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Refresh")
                         }
                     }
-                } else if (recentNotifications.isEmpty()) {
-                    Text("No notification signals captured yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    recentNotifications.take(3).forEach { notification ->
-                        NotificationRow(notification)
+                    usage.apps.forEach { UsageRow(it) }
+                }
+                if (notificationAccessEnabled) {
+                    Text("Recent signals", style = MaterialTheme.typography.titleLarge)
+                    if (recentNotifications.isEmpty()) {
+                        Text("No notification signals captured yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        recentNotifications.take(3).forEach { notification -> NotificationRow(notification) }
                     }
                 }
                 Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
@@ -818,19 +821,19 @@ private fun AssistantDashboard(
                 }
             } else if (tab == 1) {
                 Text("PRIVATE CHAT", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Text("Talk to your local context", style = MaterialTheme.typography.headlineSmall)
+                Text("Frontier coach over local context", style = MaterialTheme.typography.headlineSmall)
                 Text(chatState, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 lastInferenceStats?.let { stats -> InferenceStatsCard(stats) }
                 Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF10192B))) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("CONTEXT ENGINE", color = Color(0xFF85F5CB), style = MaterialTheme.typography.labelMedium)
-                        Text("pa retrieves relevant memories, plans, meetings and redacted signals for every reply.", color = Color.White.copy(alpha = .8f))
+                        Text("Local GenieX curates context; ${frontierModel} writes the reply.", color = Color.White.copy(alpha = .8f))
                     }
                 }
                 if (chatMessages.isEmpty()) Text("Start a conversation. Messages remain on this device.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 chatMessages.takeLast(20).forEach { ChatBubble(it) }
                 if (chatBusy) {
-                    ChatLoadingBubble(computeUnit, streamingResponse)
+                    ChatLoadingBubble(frontierModel)
                 }
                 OutlinedTextField(
                     value = chatDraft,
@@ -853,11 +856,11 @@ private fun AssistantDashboard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.width(10.dp))
-                        Text("pa is responding on ${computeUnit.uppercase()}")
+                        Text("pa is responding with $frontierModel")
                     } else {
                         Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Send locally")
+                        Text("Send to frontier")
                     }
                 }
             } else if (tab == 2) {
@@ -913,11 +916,11 @@ private fun AssistantDashboard(
                 ) { Text("Generate with pa") }
                 if (plans.isEmpty()) Text("No plans yet. pa will store generated plans here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 plans.forEach { plan ->
-                    PlanCard(plan, planTasks.filter { it.planId == plan.id }, onToggleTask) {
+                    PlanCard(plan, planTasks.filter { it.planId == plan.id }, graphEdges, graphNodes, onToggleTask) {
                         planPendingDelete = plan
                     }
                 }
-            } else {
+            } else if (tab == 3) {
                 Text("MEMORY", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 Text("Inspectable local knowledge", style = MaterialTheme.typography.headlineSmall)
                 OutlinedTextField(memoryDraft, { memoryDraft = it }, label = { Text("Add something pa should remember") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp))
@@ -947,6 +950,34 @@ private fun AssistantDashboard(
                         }
                     }
                 }
+            } else if (tab == 4) {
+                GraphMemoryScreen(goals, plans, planTasks, actions, graphEdges, graphNodes, memories)
+            } else {
+                Text("SETTINGS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text("Models, data and permissions", style = MaterialTheme.typography.headlineSmall)
+                Text("AI MODELS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                ModelCard(modelName = modelName, modelState = modelState, computeUnit = computeUnit, onLoadModel = onLoadModel)
+                FrontierCard(configured = frontierConfigured, model = frontierModel, onClick = onFrontierSettings)
+                Text("DATA ACCESS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                SettingsAccessCard(
+                    title = "Usage insights",
+                    detail = if (usage.hasPermission) "Enabled · ${usage.apps.size} apps available today" else "Allow read-only Usage Access for app patterns",
+                    enabled = usage.hasPermission,
+                    icon = Icons.Rounded.Insights,
+                    action = if (usage.hasPermission) "Refresh" else "Open",
+                    onClick = if (usage.hasPermission) onRefreshUsage else onUsagePermission
+                )
+                SettingsAccessCard(
+                    title = "Notification context",
+                    detail = if (notificationAccessEnabled) "Enabled · notification text is filtered before frontier use" else "Enable read-only notification signals",
+                    enabled = notificationAccessEnabled,
+                    icon = Icons.Rounded.Notifications,
+                    action = if (notificationAccessEnabled) "Settings" else "Enable",
+                    onClick = onNotificationPermission
+                )
+                CalendarSection(calendarSnapshot, onCalendarPermission, onRefreshCalendar)
+                Text("SHOWCASE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                ShowcaseCard(demoLoaded, demoState, onLoadDemo, onClearDemo)
             }
         }
     }
@@ -1164,6 +1195,61 @@ private fun CalendarEventCard(event: LocalCalendarEvent) {
 }
 
 @androidx.compose.runtime.Composable
+private fun DayBriefCard(actions: List<ActionEntity>, tasks: List<PlanTaskEntity>) {
+    val now = Calendar.getInstance()
+    val night = now.get(Calendar.HOUR_OF_DAY) >= 18
+    val start = (now.clone() as Calendar).apply {
+        set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        if (!night) add(Calendar.DAY_OF_YEAR, -1)
+    }
+    val end = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, 1) }
+    val completed = actions.filter { it.occurredAt in start.timeInMillis until end.timeInMillis }
+        .sortedByDescending { it.occurredAt }.take(4)
+    val next = tasks.filter { it.status != "done" && it.status != "blocked" }
+        .sortedWith(compareBy<PlanTaskEntity> { it.priority }.thenBy { it.position }).take(4)
+
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (night) "EVENING RECAP" else "MORNING BRIEF", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+            BriefList(if (night) "Done today" else "Yesterday", completed.map { it.title }, "No linked activity recorded.")
+            Divider()
+            BriefList(if (night) "Tomorrow" else "Needs attention today", next.map { it.title }, "Nothing pending — choose a new priority.")
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun BriefList(title: String, items: List<String>, emptyText: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        if (items.isEmpty()) Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        else items.forEach { Text("• $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun TodayTaskList(tasks: List<PlanTaskEntity>, onToggle: (PlanTaskEntity) -> Unit) {
+    val today = tasks.filter { it.status != "done" && it.status != "blocked" }
+        .sortedWith(compareBy<PlanTaskEntity> { it.priority }.thenBy { it.position }).take(6)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Today's tasks", style = MaterialTheme.typography.titleLarge)
+        if (today.isEmpty()) Text("No ready tasks today.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        today.forEach { task ->
+            Surface(onClick = { onToggle(task) }, color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.RadioButtonUnchecked, contentDescription = "Complete ${task.title}", tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(task.title, style = MaterialTheme.typography.titleSmall)
+                        if (task.details.isNotBlank()) Text(task.details, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
 private fun IntentRealityCard(
     commitments: List<CommitmentEntity>,
     planTasks: List<PlanTaskEntity>,
@@ -1177,7 +1263,9 @@ private fun IntentRealityCard(
 ) {
     val openCommitments = commitments.count { it.status == "open" }
     val openTasks = planTasks.count { it.status != "done" }
-    val todayInsight = dailyInsight?.takeIf { it.date == currentDateKey() }
+    val todayInsight = dailyInsight?.takeIf {
+        it.date == currentDateKey() && it.briefing.isNotBlank() && !it.briefing.equals("null", ignoreCase = true)
+    }
     val topApp = usage.apps.firstOrNull()
     Card(
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF10192B)),
@@ -1351,6 +1439,47 @@ private fun FrontierCard(configured: Boolean, model: String, onClick: () -> Unit
 }
 
 @androidx.compose.runtime.Composable
+private fun ShowcaseCard(loaded: Boolean, state: String, onLoad: () -> Unit, onClear: () -> Unit) {
+    Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFFFFF2CC))) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(if (loaded) "SHOWCASE DATA ACTIVE" else "DEVELOPER SHOWCASE", color = Color(0xFF765800), style = MaterialTheme.typography.labelMedium)
+                    Text(if (loaded) "Aarav's detailed memory graph is loaded" else "Load a realistic developer profile", style = MaterialTheme.typography.titleMedium)
+                    Text(state, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                }
+                Icon(Icons.Rounded.TrackChanges, contentDescription = null, tint = Color(0xFF765800))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = onLoad, modifier = Modifier.weight(1f)) { Text(if (loaded) "Refresh timeline" else "Load showcase") }
+                if (loaded) OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f)) { Text("Remove") }
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun SettingsAccessCard(
+    title: String,
+    detail: String,
+    enabled: Boolean,
+    icon: ImageVector,
+    action: String,
+    onClick: () -> Unit
+) {
+    Card(onClick = onClick, colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(action, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
 private fun UsageRow(app: AppUsage) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(app.label, style = MaterialTheme.typography.titleMedium); Text(formatMinutes(app.minutes), color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -1390,7 +1519,7 @@ private fun InferenceStatsCard(stats: InferenceStats) {
 }
 
 @androidx.compose.runtime.Composable
-private fun ChatLoadingBubble(computeUnit: String, streamingResponse: String) {
+private fun ChatLoadingBubble(frontierModel: String) {
     Card(
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFFE9EEFF)),
         shape = RoundedCornerShape(18.dp),
@@ -1405,18 +1534,11 @@ private fun ChatLoadingBubble(computeUnit: String, streamingResponse: String) {
             Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("pa is responding", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Retrieving local context and running on ${computeUnit.uppercase()}",
+                    "Retrieving local context and sending to $frontierModel",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-        }
-        if (streamingResponse.isNotBlank()) {
-            Text(
-                streamingResponse,
-                modifier = Modifier.padding(start = 56.dp, end = 15.dp, bottom = 15.dp),
-                color = MaterialTheme.colorScheme.onSurface
-            )
         }
     }
 }
@@ -1442,6 +1564,8 @@ private fun ChatBubble(message: ChatMessageEntity) {
 private fun PlanCard(
     plan: PlanEntity,
     tasks: List<PlanTaskEntity>,
+    edges: List<GraphEdgeEntity>,
+    nodes: List<GraphNodeEntity>,
     onToggleTask: (PlanTaskEntity) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -1455,6 +1579,7 @@ private fun PlanCard(
             }
             Text(plan.objective, color = MaterialTheme.colorScheme.onSurfaceVariant)
             tasks.forEach { task ->
+                val prerequisites = edges.filter { it.type == "requires" && it.fromId == task.id }
                 Surface(onClick = { onToggleTask(task) }, color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
                     Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -1465,11 +1590,147 @@ private fun PlanCard(
                         Column(Modifier.weight(1f)) {
                             Text(task.title, style = MaterialTheme.typography.titleSmall)
                             if (task.details.isNotBlank()) Text(task.details, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                            if (prerequisites.isNotEmpty()) {
+                                Text(
+                                    "Requires: " + prerequisites.joinToString { dependency ->
+                                        val prerequisite = nodes.firstOrNull { it.id == dependency.toId }
+                                        (prerequisite?.title ?: tasks.firstOrNull { it.id == dependency.toId }?.title ?: "Missing prerequisite") +
+                                            if (prerequisite?.status == "missing") " [MISSING]" else ""
+                                    },
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun GraphMemoryScreen(
+    goals: List<GoalEntity>,
+    plans: List<PlanEntity>,
+    tasks: List<PlanTaskEntity>,
+    actions: List<ActionEntity>,
+    edges: List<GraphEdgeEntity>,
+    nodes: List<GraphNodeEntity>,
+    memories: List<MemoryEntity>
+) {
+    var typeFilter by remember { mutableStateOf("all") }
+    val visibleNodes = nodes.filter { typeFilter == "all" || it.type == typeFilter }
+    val labels = nodes.associateBy { it.id }
+    Text("MEMORY GRAPH", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+    Text("How pa connects your context", style = MaterialTheme.typography.headlineSmall)
+    Text(
+        "Plans become goals. Local GenieX links ingested actions to goals. Patterns are computed from those links; missing prerequisites stay visible.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodySmall
+    )
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf("all", "goal", "plan", "task", "fact", "pattern", "event", "action", "prerequisite").forEach { type ->
+            if (typeFilter == type) Button(onClick = { typeFilter = type }) { Text(type.uppercase()) }
+            else OutlinedButton(onClick = { typeFilter = type }) { Text(type.uppercase()) }
+        }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StatCard("NODES", nodes.size.toString(), "typed", Modifier.weight(1f))
+        StatCard("LINKS", edges.size.toString(), "evidence", Modifier.weight(1f))
+        StatCard("MISSING", nodes.count { it.status == "missing" }.toString(), "prereqs", Modifier.weight(1f))
+    }
+    visibleNodes.take(60).forEach { graphNode ->
+        val nodeEdges = edges.filter { it.fromId == graphNode.id || it.toId == graphNode.id }.take(8)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = androidx.compose.material3.CardDefaults.cardColors(
+                containerColor = if (graphNode.status == "missing") MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(Modifier.fillMaxWidth().padding(13.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(graphNode.type.uppercase(), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                    Text(graphNode.status.uppercase(), style = MaterialTheme.typography.labelSmall)
+                }
+                Text(graphNode.title, style = MaterialTheme.typography.titleMedium)
+                if (graphNode.details.isNotBlank()) Text(graphNode.details.take(300), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                nodeEdges.forEach { relation ->
+                    val outgoing = relation.fromId == graphNode.id
+                    val other = labels[if (outgoing) relation.toId else relation.fromId]?.title ?: if (outgoing) relation.toId else relation.fromId
+                    Text(if (outgoing) "→ ${relation.type} · $other" else "← ${relation.type} · $other", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+    if (nodes.isEmpty()) {
+    if (edges.isEmpty() && goals.isEmpty()) {
+        Card(colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Text("No graph links yet. Generate a plan or let local curation process notifications, calendar and usage signals.", modifier = Modifier.padding(16.dp))
+        }
+    }
+    goals.forEach { goal ->
+        val goalEdges = edges.filter { it.toId == goal.id || it.toId == "goal:${goal.id}" || it.fromId == goal.id || it.fromId == "goal:${goal.id}" }
+        val goalActions = actions.filter { action -> goalEdges.any { it.fromId == action.id || it.fromId == "action:${action.id}" } }
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("GOAL · ${goal.title}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                Text(goal.description, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "PATTERN · ${if (goalActions.isEmpty()) "stale — no linked actions yet" else "active — ${goalActions.size} linked action(s)"}",
+                    color = if (goalActions.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                goalEdges.take(12).forEach { edge ->
+                    Text(
+                        "${graphNodeLabel(edge.fromType, edge.fromId, goals, plans, tasks, actions)}  — ${edge.type} →  ${graphNodeLabel(edge.toType, edge.toId, goals, plans, tasks, actions)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+    val prerequisiteEdges = edges.filter { it.type == "requires" }
+    if (prerequisiteEdges.isNotEmpty()) {
+        Text("PREREQUISITES", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        prerequisiteEdges.forEach { edge ->
+            Card(modifier = Modifier.fillMaxWidth(), colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Text(
+                    "${graphNodeLabel(edge.fromType, edge.fromId, goals, plans, tasks, actions)} requires ${graphNodeLabel(edge.toType, edge.toId, goals, plans, tasks, actions)}",
+                    modifier = Modifier.padding(14.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (edge.toId.startsWith("missing:")) Text("Not present in memory or this plan", modifier = Modifier.padding(start = 14.dp, bottom = 12.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+    if (memories.isNotEmpty()) {
+        Text("FACTS / INFO", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        Text("Saved facts are local nodes. They will be linked when curation has evidence for a goal; they are not guessed into a relationship.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        memories.take(8).forEach { memory ->
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
+                Text("• ${memory.text.take(180)}", modifier = Modifier.padding(12.dp))
+            }
+        }
+    }
+    }
+}
+
+private fun graphNodeLabel(
+    type: String,
+    id: String,
+    goals: List<GoalEntity>,
+    plans: List<PlanEntity>,
+    tasks: List<PlanTaskEntity>,
+    actions: List<ActionEntity>
+): String {
+    if (id.startsWith("missing:")) return "Missing prerequisite"
+    return when (type) {
+        "goal" -> goals.firstOrNull { it.id == id || "goal:${it.id}" == id }?.title ?: id
+        "plan" -> plans.firstOrNull { it.id == id || "plan:${it.id}" == id }?.title ?: id
+        "task" -> tasks.firstOrNull { it.id == id }?.title ?: id
+        "action" -> actions.firstOrNull { it.id == id || "action:${it.id}" == id }?.title ?: id
+        else -> id
     }
 }
 

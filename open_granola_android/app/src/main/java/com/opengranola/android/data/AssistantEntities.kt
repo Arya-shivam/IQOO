@@ -1,6 +1,7 @@
 package com.opengranola.android.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "memories")
@@ -94,5 +95,73 @@ data class DailyInsightEntity(
     val briefing: String,
     val contextSnapshotId: String,
     val feedback: Int,
+    val createdAt: Long
+)
+
+@Entity(tableName = "goals", indices = [Index(value = ["status"])])
+data class GoalEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val description: String,
+    val status: String,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Entity(tableName = "actions", indices = [Index(value = ["occurredAt"]), Index(value = ["source", "sourceId"], unique = true)])
+data class ActionEntity(
+    @PrimaryKey val id: String,
+    val source: String,
+    val sourceId: String,
+    val type: String,
+    val title: String,
+    val summary: String,
+    val tags: String,
+    val importance: Float,
+    val linkStatus: String,
+    val occurredAt: Long,
+    val createdAt: Long
+)
+
+@Entity(tableName = "graph_nodes", indices = [Index(value = ["type"]), Index(value = ["sourceId"])])
+data class GraphNodeEntity(
+    @PrimaryKey val id: String,
+    val type: String,
+    val title: String,
+    val details: String,
+    val tags: String,
+    val status: String,
+    val sourceId: String,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Entity(
+    tableName = "graph_edges",
+    indices = [Index(value = ["fromType", "fromId", "toType", "toId", "type"], unique = true)]
+)
+data class GraphEdgeEntity(
+    @PrimaryKey val id: String,
+    val fromType: String,
+    val fromId: String,
+    val toType: String,
+    val toId: String,
+    val type: String,
+    val confidence: Float,
+    val evidence: String,
+    val createdAt: Long
+)
+
+@Entity(tableName = "curation_queue", indices = [Index(value = ["status", "createdAt"])])
+data class CurationQueueEntity(
+    @PrimaryKey val id: String,
+    val source: String,
+    val sourceId: String,
+    val title: String,
+    val content: String,
+    val occurredAt: Long,
+    val status: String,
+    val attempts: Int,
+    val lastError: String,
     val createdAt: Long
 )

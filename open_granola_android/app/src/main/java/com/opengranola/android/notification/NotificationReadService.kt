@@ -8,7 +8,9 @@ import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import com.opengranola.android.data.NotificationEntity
+import com.opengranola.android.data.CurationQueueEntity
 import com.opengranola.android.data.OpenGranolaDatabase
+import com.opengranola.android.ai.LocalCurationWorker
 import com.opengranola.android.notifications.NotificationRedactor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +43,8 @@ class NotificationReadService : NotificationListenerService() {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
         }.getOrDefault(sbn.packageName)
         scope.launch {
-            OpenGranolaDatabase.get(applicationContext).notificationDao().save(
+            val database = OpenGranolaDatabase.get(applicationContext)
+            database.notificationDao().save(
                 NotificationEntity(
                     id = "${sbn.packageName}:${sbn.key}",
                     packageName = sbn.packageName,
@@ -51,6 +54,21 @@ class NotificationReadService : NotificationListenerService() {
                     postedAt = sbn.postTime
                 )
             )
+            database.assistantDao().enqueue(
+                CurationQueueEntity(
+                    id = "notification:${sbn.key}",
+                    source = "notification",
+                    sourceId = sbn.key,
+                    title = title.ifBlank { appLabel },
+                    content = body,
+                    occurredAt = sbn.postTime,
+                    status = "pending",
+                    attempts = 0,
+                    lastError = "",
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            LocalCurationWorker.schedule(applicationContext)
         }
     }
 

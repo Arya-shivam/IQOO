@@ -19,6 +19,12 @@ import com.opengranola.android.data.PlanEntity
 import com.opengranola.android.data.PlanTaskEntity
 import com.opengranola.android.data.CommitmentEntity
 import com.opengranola.android.data.DailyInsightEntity
+import com.opengranola.android.data.GoalEntity
+import com.opengranola.android.data.GraphEdgeEntity
+import com.opengranola.android.data.GraphNodeEntity
+import com.opengranola.android.data.CurationQueueEntity
+import com.opengranola.android.data.DemoDataSeeder
+import com.opengranola.android.ai.LocalCurationWorker
 import com.opengranola.android.usage.UsageSnapshot
 import com.opengranola.android.calendar.CalendarSnapshot
 import kotlinx.coroutines.flow.SharingStarted
@@ -59,8 +65,21 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val dailyInsights = assistantDao.observeDailyInsights()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val goals = assistantDao.observeGoals()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val actions = assistantDao.observeActions()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val graphEdges = assistantDao.observeEdges()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val graphNodes = assistantDao.observeGraphNodes()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val demoNodeCount = assistantDao.observeDemoNodeCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+    private val _demoState = MutableStateFlow("Load detailed showcase data")
+    val demoState: StateFlow<String> = _demoState.asStateFlow()
 
     init {
+        LocalCurationWorker.schedule(application)
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             assistantDao.saveSession(ChatSessionEntity(ContextAssembler.DEFAULT_SESSION, "pa", now, now))
@@ -76,6 +95,35 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         profilePreferences.edit().putString("user_name", clean).apply()
     }
 
+    fun loadDemoData() {
+        viewModelScope.launch {
+            _demoState.value = "Building showcase graph…"
+            runCatching {
+                if (!profilePreferences.contains("pre_demo_user_name")) {
+                    profilePreferences.edit().putString("pre_demo_user_name", _userName.value).apply()
+                }
+                DemoDataSeeder(database).load()
+                updateUserName("Aarav")
+            }.onSuccess {
+                _demoState.value = "Showcase ready · ask pa about work, learning, deadlines or patterns"
+            }.onFailure { error ->
+                _demoState.value = "Showcase failed: ${error.message ?: "database error"}"
+            }
+        }
+    }
+
+    fun clearDemoData() {
+        viewModelScope.launch {
+            _demoState.value = "Removing showcase data…"
+            runCatching {
+                DemoDataSeeder(database).clear()
+                profilePreferences.getString("pre_demo_user_name", null)?.let(::updateUserName)
+                profilePreferences.edit().remove("pre_demo_user_name").apply()
+            }.onSuccess { _demoState.value = "Showcase removed" }
+                .onFailure { _demoState.value = "Remove failed: ${it.message ?: "database error"}" }
+        }
+    }
+
     suspend fun saveChat(role: String, content: String) {
         assistantDao.saveMessage(
             ChatMessageEntity(UUID.randomUUID().toString(), ContextAssembler.DEFAULT_SESSION, role, content, System.currentTimeMillis())
@@ -86,7 +134,9 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         if (text.isBlank()) return
         viewModelScope.launch {
             val now = System.currentTimeMillis()
-            assistantDao.saveMemory(MemoryEntity(UUID.randomUUID().toString(), text.trim(), source, .8f, "", now, now))
+            val id = UUID.randomUUID().toString()
+            assistantDao.saveMemory(MemoryEntity(id, text.trim(), source, .8f, "", now, now))
+            assistantDao.saveGraphNodes(listOf(GraphNodeEntity("memory:$id", "fact", text.trim().take(100), text.trim(), "", "active", id, now, now)))
         }
     }
 
@@ -98,13 +148,36 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         val now = System.currentTimeMillis()
         val planId = UUID.randomUUID().toString()
         assistantDao.savePlan(PlanEntity(planId, generated.title, generated.objective, "active", now, now))
-        assistantDao.saveTasks(generated.tasks.mapIndexed { index, task ->
+        assistantDao.saveGoal(GoalEntity("goal:$planId", generated.title, generated.objective, "active", now, now))
+        assistantDao.saveEdges(listOf(GraphEdgeEntity(UUID.randomUUID().toString(), "plan", planId, "goal", "goal:$planId", "derived_from", 1f, generated.objective.take(300), now)))
+        val tasks = generated.tasks.mapIndexed { index, task ->
             PlanTaskEntity(UUID.randomUUID().toString(), planId, task.title, task.details, "todo", task.priority, index)
+        }
+        assistantDao.saveTasks(tasks)
+        assistantDao.saveGraphNodes(buildList {
+            add(GraphNodeEntity(planId, "plan", generated.title, generated.objective, "", "active", planId, now, now))
+            add(GraphNodeEntity("goal:$planId", "goal", generated.title, generated.objective, "", "active", "goal:$planId", now, now))
+            tasks.forEach { add(GraphNodeEntity(it.id, "task", it.title, it.details, "", it.status, it.id, now, now)) }
         })
+        assistantDao.saveEdges(tasks.map { task ->
+            GraphEdgeEntity(UUID.randomUUID().toString(), "plan", planId, "task", task.id, "contains", 1f, "Generated plan task", now)
+        })
+        val prerequisiteEdges = generated.tasks.flatMapIndexed { index, task ->
+            task.dependsOn.mapNotNull { dependencyIndex ->
+                val dependency = tasks.getOrNull(dependencyIndex)
+                GraphEdgeEntity(
+                    UUID.randomUUID().toString(), "task", tasks[index].id, "task",
+                    dependency?.id ?: "missing:task:$planId:$dependencyIndex", "requires", 1f,
+                    if (dependency == null) "Prerequisite was requested but is not in this plan" else "Generated plan dependency",
+                    now
+                )
+            }
+        }
+        assistantDao.saveEdges(prerequisiteEdges)
     }
 
     fun toggleTask(task: PlanTaskEntity) {
-        viewModelScope.launch { assistantDao.updateTaskStatus(task.id, if (task.status == "done") "todo" else "done") }
+        viewModelScope.launch { assistantDao.updateTaskAndGraphStatus(task.id, if (task.status == "done") "todo" else "done") }
     }
 
     fun deletePlan(id: String) {
@@ -169,6 +242,7 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             assistantDao.saveEvent(ContextEventEntity("meeting:${meeting.id}", "meeting", "summary", meeting.title, content.take(3000), now, .9f))
+            assistantDao.enqueue(CurationQueueEntity("meeting:${meeting.id}", "meeting", meeting.id, meeting.title, content.take(3000), meeting.startedAt, "pending", 0, "", now))
         }
     }
 
@@ -181,6 +255,7 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
             assistantDao.saveEvent(
                 ContextEventEntity("usage:$day", "device", "usage", "Phone usage for $day", "Total ${snapshot.totalMinutes} minutes. Apps: $apps", now, .55f)
             )
+            assistantDao.enqueue(CurationQueueEntity("usage:$day", "usage", day, "Phone usage for $day", "Total ${snapshot.totalMinutes} minutes. Apps: $apps", now, "pending", 0, "", now))
         }
     }
 
@@ -202,6 +277,9 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
             assistantDao.replaceCalendarEvents(events)
+            events.forEach { event ->
+                assistantDao.enqueue(CurationQueueEntity(event.id, "calendar", event.id, event.title, event.content, event.timestamp, "pending", 0, "", System.currentTimeMillis()))
+            }
         }
     }
 

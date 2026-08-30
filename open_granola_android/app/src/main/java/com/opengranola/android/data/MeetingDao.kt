@@ -20,6 +20,9 @@ interface MeetingDao {
     @Query("DELETE FROM meetings WHERE id = :id")
     suspend fun delete(id: String)
 
+    @Query("DELETE FROM meetings WHERE id LIKE 'demo:%'")
+    suspend fun deleteDemo()
+
     @Query("UPDATE meetings SET notes = '' WHERE id = :id")
     suspend fun clearSummary(id: String)
 }

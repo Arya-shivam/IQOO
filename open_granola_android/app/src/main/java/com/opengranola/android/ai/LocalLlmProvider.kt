@@ -10,6 +10,7 @@ import com.geniex.sdk.bean.LlmCreateInput
 import com.geniex.sdk.bean.LlmStreamResult
 import com.geniex.sdk.bean.ModelConfig
 import com.geniex.sdk.bean.RuntimeIdValue
+import com.opengranola.android.data.GoalEntity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,7 +28,7 @@ interface LocalLlmProvider {
 }
 
 data class AssistantTurn(val role: String, val content: String)
-data class GeneratedTask(val title: String, val details: String, val priority: Int)
+data class GeneratedTask(val title: String, val details: String, val priority: Int, val dependsOn: List<Int> = emptyList())
 data class GeneratedPlan(val title: String, val objective: String, val tasks: List<GeneratedTask>)
 data class GeneratedCommitment(
     val title: String,
@@ -44,6 +45,15 @@ data class InferenceStats(
     val decodeTokensPerSecond: Double
 ) { val totalTokens: Int get() = promptTokens + generatedTokens }
 data class InferenceResult(val text: String, val stats: InferenceStats)
+data class CurationInput(val source: String, val title: String, val content: String, val occurredAt: Long)
+data class CuratedAction(
+    val type: String,
+    val title: String,
+    val summary: String,
+    val tags: List<String>,
+    val importance: Float,
+    val goalIds: List<String>
+)
 
 class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     override val name: String = "GenieX (on-device)"
@@ -64,6 +74,38 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     /** Warm the native runtime before the first user request. */
     suspend fun preload(): Result<Unit> = inferenceLock.withLock {
         runCatching { ensureLlm(); Unit }
+    }
+
+    suspend fun curate(input: CurationInput, goals: List<GoalEntity>): CuratedAction {
+        val candidates = goals.joinToString("\n") { "- ${it.id}: ${it.title} — ${it.description}" }
+        val raw = generate(arrayOf(ChatMessage("user", """
+            Classify this local activity for a personal context graph.
+            Return only JSON: {"type":"action|event|noise","title":"...","summary":"...","tags":["..."],"importance":0.0,"goalIds":["..."]}
+            Use only goal IDs from the candidate list. Use [] when no goal is supported.
+            CANDIDATE GOALS:
+            $candidates
+            SOURCE: ${input.source}
+            TITLE: ${input.title}
+            CONTENT: ${input.content.take(1800)}
+        """.trimIndent())), 384).text
+        val jsonText = raw.substringAfter('{', "").let { if (it.isBlank()) "" else "{$it" }
+            .substringBeforeLast('}', "").let { if (it.isBlank()) "" else "$it}" }
+        return runCatching {
+            val json = JSONObject(jsonText)
+            val goalIds = json.optJSONArray("goalIds")?.let { array ->
+                (0 until array.length()).map { array.optString(it) }.filter { id -> goals.any { it.id == id } }
+            }.orEmpty()
+            CuratedAction(
+                type = json.optString("type", "event").lowercase().let { if (it in setOf("action", "event", "noise")) it else "event" },
+                title = json.optString("title", input.title).take(240),
+                summary = json.optString("summary", input.content).take(1800),
+                tags = json.optJSONArray("tags")?.let { array -> (0 until array.length()).map { array.optString(it) }.filter(String::isNotBlank).take(8) }.orEmpty(),
+                importance = json.optDouble("importance", .5).toFloat().coerceIn(0f, 1f),
+                goalIds = goalIds
+            )
+        }.getOrElse {
+            CuratedAction("event", input.title.take(240), input.content.take(1800), emptyList(), .4f, emptyList())
+        }
     }
 
     override suspend fun summarize(transcript: String, userNotes: String, context: String): String {
@@ -98,7 +140,8 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         val raw = generate(arrayOf(ChatMessage("user", """
             You are pa. Create a practical plan using relevant local context.
             Return only JSON with this shape:
-            {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1}]}
+            {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[]}]}
+            dependsOn contains zero-based task indexes only. Use it for real prerequisites; use [] when none are known.
             Use 3-7 concrete tasks. Priority 1 is highest. Do not include markdown fences.
 
             Objective: $objective
@@ -197,7 +240,12 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
             val array = json.getJSONArray("tasks")
             val tasks = (0 until array.length()).map { index ->
                 val task = array.getJSONObject(index)
-                GeneratedTask(task.getString("title"), task.optString("details"), task.optInt("priority", index + 1))
+                GeneratedTask(
+                    task.getString("title"),
+                    task.optString("details"),
+                    task.optInt("priority", index + 1),
+                    task.optJSONArray("dependsOn")?.let { deps -> (0 until deps.length()).map { deps.optInt(it, -1) }.filter { it >= 0 } } ?: emptyList()
+                )
             }
             GeneratedPlan(json.optString("title", "Plan"), json.optString("objective", objective), tasks)
         }.getOrElse {

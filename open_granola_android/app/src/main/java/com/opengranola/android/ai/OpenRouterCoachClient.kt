@@ -33,7 +33,8 @@ class OpenRouterCoachClient(context: Context) {
     suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
         val raw = complete(listOf(FrontierMessage("user", """
             Create a practical plan from this curated context.
-            Return only JSON: {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1}]}
+            Return only JSON: {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[]}]}
+            dependsOn contains zero-based indexes of real prerequisite tasks. Use [] when no prerequisite is known.
             Use 3-7 concrete tasks. Do not claim anything is already done.
             OBJECTIVE: $objective
             CURATED CONTEXT: $context
@@ -45,7 +46,12 @@ class OpenRouterCoachClient(context: Context) {
             val tasks = json.getJSONArray("tasks").let { array ->
                 (0 until array.length()).map { index ->
                     val task = array.getJSONObject(index)
-                    GeneratedTask(task.getString("title"), task.optString("details"), task.optInt("priority", index + 1))
+                    GeneratedTask(
+                        task.getString("title"),
+                        task.optString("details"),
+                        task.optInt("priority", index + 1),
+                        task.optJSONArray("dependsOn")?.let { deps -> (0 until deps.length()).map { deps.optInt(it, -1) }.filter { it >= 0 } } ?: emptyList()
+                    )
                 }
             }
             GeneratedPlan(json.optString("title", "Plan"), json.optString("objective", objective), tasks)
