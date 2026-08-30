@@ -89,6 +89,8 @@ class OpenRouterCoachClient(context: Context) {
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (connection.responseCode !in 200..299) error("OpenRouter ${connection.responseCode}: ${JSONObject(response).optString("error", response).take(300)}")
             JSONObject(response).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim()
+                .takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
+                ?: error("OpenRouter returned an empty response")
         } finally {
             connection.disconnect()
         }
