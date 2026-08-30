@@ -33,7 +33,8 @@ class OpenRouterCoachClient(context: Context) {
     suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
         val raw = complete(listOf(FrontierMessage("user", """
             Create a practical plan from this curated context.
-            Return only JSON: {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[]}]}
+            Return only JSON: {"title":"...","objective":"...","blockers":["..."],"tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[]}]}
+            Inspect the context for unfinished skills, tasks, or prerequisites that can block this objective. Put up to 3 concise, evidence-based warnings in blockers; use [] when none exist.
             dependsOn contains zero-based indexes of real prerequisite tasks. Use [] when no prerequisite is known.
             Use 3-7 concrete tasks. Do not claim anything is already done.
             OBJECTIVE: $objective
@@ -54,7 +55,10 @@ class OpenRouterCoachClient(context: Context) {
                     )
                 }
             }
-            GeneratedPlan(json.optString("title", "Plan"), json.optString("objective", objective), tasks)
+            val blockers = json.optJSONArray("blockers")?.let { array ->
+                (0 until array.length()).map { array.optString(it).trim() }.filter { it.isNotBlank() }.take(3)
+            } ?: emptyList()
+            GeneratedPlan(json.optString("title", "Plan"), json.optString("objective", objective), tasks, blockers)
         }.getOrElse {
             GeneratedPlan("Plan for ${objective.take(48)}", objective, listOf(GeneratedTask("Review the frontier response", raw.take(1200), 1)))
         }

@@ -29,7 +29,7 @@ interface LocalLlmProvider {
 
 data class AssistantTurn(val role: String, val content: String)
 data class GeneratedTask(val title: String, val details: String, val priority: Int, val dependsOn: List<Int> = emptyList())
-data class GeneratedPlan(val title: String, val objective: String, val tasks: List<GeneratedTask>)
+data class GeneratedPlan(val title: String, val objective: String, val tasks: List<GeneratedTask>, val blockers: List<String> = emptyList())
 data class GeneratedCommitment(
     val title: String,
     val owner: String,

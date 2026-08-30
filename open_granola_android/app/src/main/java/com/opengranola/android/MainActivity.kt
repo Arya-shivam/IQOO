@@ -450,7 +450,16 @@ class MainActivity : ComponentActivity() {
                                             val context = viewModel.buildContext("plan generation", writeIntent.second)
                                             val generated = frontier.generatePlan(writeIntent.second, context.text)
                                             viewModel.saveGeneratedPlan(generated)
-                                            "Plan created: ${generated.title}. You can review its tasks in Plans."
+                                            val blockers = generated.blockers.ifEmpty {
+                                                generated.tasks.mapNotNull { task ->
+                                                    val prerequisites = task.dependsOn.mapNotNull { generated.tasks.getOrNull(it)?.title }
+                                                    prerequisites.takeIf { it.isNotEmpty() }?.let { "${task.title} waits for ${it.joinToString()}." }
+                                                }.take(3)
+                                            }
+                                            buildString {
+                                                append("Plan created: ${generated.title}. You can review its tasks in Plans.")
+                                                if (blockers.isNotEmpty()) append("\n\nManager note: ${blockers.joinToString(" ")}")
+                                            }
                                         }
                                         else -> {
                                             chatState = "Retrieving local context…"
