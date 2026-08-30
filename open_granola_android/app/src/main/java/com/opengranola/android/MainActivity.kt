@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,6 +43,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChatBubble
@@ -108,6 +111,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -182,6 +186,16 @@ private enum class DashboardDestination(val label: String, val icon: ImageVector
     SETTINGS("Settings", Icons.Rounded.Settings)
 }
 
+private enum class MorningRobotMood {
+    Idle,
+    Thinking,
+    Talking,
+    Happy,
+    Focused,
+    Alert,
+    Concern
+}
+
 private fun chatWriteIntent(message: String): Pair<String, String>? =
     CHAT_WRITE_INTENT.matchEntire(message)?.destructured?.let { (type, objective) -> type.lowercase() to objective.trim() }
         ?.takeIf { it.second.isNotBlank() }
@@ -253,6 +267,10 @@ class MainActivity : ComponentActivity() {
         var planBusy by remember { mutableStateOf(false) }
         var briefingBusy by remember { mutableStateOf(false) }
         var briefingState by remember { mutableStateOf("Connect intention with how today is unfolding") }
+        var briefingSpeaking by remember { mutableStateOf(false) }
+        var voiceReady by remember { mutableStateOf(false) }
+        var voiceState by remember { mutableStateOf("Voice starting…") }
+        var ttsEngine by remember { mutableStateOf<TextToSpeech?>(null) }
         var calendarSnapshot by remember { mutableStateOf(CalendarSnapshot()) }
         var calendarRefresh by remember { mutableIntStateOf(0) }
         var calendarBusy by remember { mutableStateOf(false) }
@@ -266,6 +284,83 @@ class MainActivity : ComponentActivity() {
             )
         }
         DisposableEffect(Unit) { onDispose { transcriber.release() } }
+        DisposableEffect(Unit) {
+            lateinit var engine: TextToSpeech
+            engine = TextToSpeech(this@MainActivity) { status ->
+                runOnUiThread {
+                    if (status == TextToSpeech.SUCCESS) {
+                        val languageResult = engine.setLanguage(Locale.getDefault())
+                        if (languageResult == TextToSpeech.LANG_MISSING_DATA || languageResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                            voiceReady = false
+                            voiceState = "Install or enable an Android text-to-speech voice"
+                        } else {
+                            engine.setSpeechRate(.94f)
+                            engine.setPitch(1.08f)
+                            voiceReady = true
+                            voiceState = "Voice ready"
+                        }
+                    } else {
+                        voiceReady = false
+                        voiceState = "Android text-to-speech is unavailable"
+                    }
+                }
+            }.also { created ->
+                created.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        runOnUiThread {
+                            if (utteranceId?.startsWith("morning-brief") == true) {
+                                briefingSpeaking = true
+                                briefingState = "pa-bot is speaking your morning brief"
+                            }
+                        }
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        runOnUiThread {
+                            if (utteranceId?.startsWith("morning-brief") == true) {
+                                briefingSpeaking = false
+                                briefingState = "Morning brief spoken aloud"
+                            }
+                        }
+                    }
+
+                    override fun onError(utteranceId: String?) {
+                        runOnUiThread {
+                            if (utteranceId?.startsWith("morning-brief") == true) {
+                                briefingSpeaking = false
+                                briefingState = "Voice failed. Check Android text-to-speech settings."
+                            }
+                        }
+                    }
+                })
+                ttsEngine = created
+            }
+            onDispose {
+                ttsEngine?.stop()
+                ttsEngine?.shutdown()
+                ttsEngine = null
+                briefingSpeaking = false
+            }
+        }
+        fun speakMorningBrief(rawBriefing: String) {
+            val briefing = sanitizeForDisplay(rawBriefing)
+            val engine = ttsEngine
+            if (briefing.isBlank()) {
+                briefingState = "No morning brief to speak yet"
+                return
+            }
+            if (!voiceReady || engine == null) {
+                briefingState = voiceState
+                return
+            }
+            briefingSpeaking = true
+            briefingState = "pa-bot is speaking your morning brief"
+            val result = engine.speak(briefing, TextToSpeech.QUEUE_FLUSH, null, "morning-brief-${System.currentTimeMillis()}")
+            if (result == TextToSpeech.ERROR) {
+                briefingSpeaking = false
+                briefingState = "Voice failed. Check Android text-to-speech settings."
+            }
+        }
         LaunchedEffect(Unit) {
             FrontierCoachWorker.schedule(this@MainActivity)
             modelRepository.selected()?.let { saved ->
@@ -463,6 +558,9 @@ class MainActivity : ComponentActivity() {
                         planBusy = planBusy,
                         briefingState = briefingState,
                         briefingBusy = briefingBusy,
+                        briefingSpeaking = briefingSpeaking,
+                        voiceReady = voiceReady,
+                        voiceState = voiceState,
                         usageBusy = usageBusy,
                         calendarBusy = calendarBusy,
                         computeUnit = selectedComputeUnit,
@@ -562,15 +660,19 @@ class MainActivity : ComponentActivity() {
                                     briefingState = "Sending curated context to frontier…"
                                     runCatching {
                                         val context = viewModel.buildContext("daily intent-reality briefing")
-                                        viewModel.saveDailyInsight(frontier.generateDailyBriefing(context.text), context.snapshotId)
-                                }.onSuccess {
+                                        val briefing = frontier.generateDailyBriefing(context.text)
+                                        viewModel.saveDailyInsight(briefing, context.snapshotId)
+                                        briefing
+                                }.onSuccess { briefing ->
                                     briefingState = "Daily briefing stored privately"
+                                    speakMorningBrief(briefing)
                                 }.onFailure { error ->
                                     briefingState = "Briefing failed: ${error.message ?: "check the local model"}"
                                 }
                                 briefingBusy = false
                             }
                         },
+                        onSpeakDailyInsight = ::speakMorningBrief,
                         onAddMemory = viewModel::addMemory,
                         onArchiveMemory = viewModel::archiveMemory,
                         onToggleTask = viewModel::toggleTask,
@@ -727,6 +829,9 @@ private fun AssistantDashboard(
     planBusy: Boolean,
     briefingState: String,
     briefingBusy: Boolean,
+    briefingSpeaking: Boolean,
+    voiceReady: Boolean,
+    voiceState: String,
     usageBusy: Boolean,
     calendarBusy: Boolean,
     computeUnit: String,
@@ -745,6 +850,7 @@ private fun AssistantDashboard(
     onSendChat: (String) -> Unit,
     onGeneratePlan: (String) -> Unit,
     onGenerateBriefing: () -> Unit,
+    onSpeakDailyInsight: (String) -> Unit,
     onAddMemory: (String) -> Unit,
     onArchiveMemory: (String) -> Unit,
     onToggleTask: (PlanTaskEntity) -> Unit,
@@ -931,7 +1037,11 @@ private fun AssistantDashboard(
                     dailyInsight = dailyInsight,
                     state = briefingState,
                     busy = briefingBusy,
+                    speaking = briefingSpeaking,
+                    voiceReady = voiceReady,
+                    voiceState = voiceState,
                     onGenerate = onGenerateBriefing,
+                    onSpeak = onSpeakDailyInsight,
                     onRate = onRateDailyInsight
                 )
                 TodayTaskList(planTasks, onToggleTask)
@@ -1499,7 +1609,11 @@ private fun IntentRealityCard(
     dailyInsight: DailyInsightEntity?,
     state: String,
     busy: Boolean,
+    speaking: Boolean,
+    voiceReady: Boolean,
+    voiceState: String,
     onGenerate: () -> Unit,
+    onSpeak: (String) -> Unit,
     onRate: (String, Boolean) -> Unit
 ) {
     val openCommitments = commitments.count { it.status == "open" }
@@ -1508,6 +1622,15 @@ private fun IntentRealityCard(
         it.date == currentDateKey() && it.briefing.isNotBlank() && !it.briefing.equals("null", ignoreCase = true)
     }
     val topApp = usage.apps.firstOrNull()
+    val mood = when {
+        busy -> MorningRobotMood.Thinking
+        speaking -> MorningRobotMood.Talking
+        todayInsight?.feedback == 1 -> MorningRobotMood.Happy
+        todayInsight?.feedback == -1 -> MorningRobotMood.Concern
+        notificationsToday > 12 -> MorningRobotMood.Alert
+        openCommitments + openTasks > 0 -> MorningRobotMood.Focused
+        else -> MorningRobotMood.Idle
+    }
     Card(
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color(0xFF10192B)),
         shape = RoundedCornerShape(26.dp)
@@ -1534,32 +1657,35 @@ private fun IntentRealityCard(
                 },
                 color = Color.White.copy(alpha = .86f)
             )
-            Surface(color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(18.dp)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Surface(color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(24.dp)) {
+                Column(Modifier.fillMaxWidth().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("MORNING PA-BOT", color = Color(0xFFFFCE73), style = MaterialTheme.typography.labelMedium)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        MorningBriefRobot(
-                            speaking = busy || todayInsight != null,
-                            alert = notificationsToday > 12,
-                            modifier = Modifier.size(92.dp)
-                        )
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                when {
-                                    busy -> "Scanning your plans, commitments, alerts and attention signals."
-                                    todayInsight != null -> "Here is your private morning brief, spoken in pa's little robot voice."
-                                    else -> "Tap generate and pa will explain the morning like a desk companion."
-                                },
-                                color = Color.White.copy(alpha = .74f),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                todayInsight?.briefing ?: "I'll light up the important focus, reality check and next step once today's context is ready.",
-                                color = Color.White
-                            )
-                        }
-                    }
+                    MorningBriefRobot(
+                        mood = mood,
+                        speaking = speaking || busy,
+                        modifier = Modifier.fillMaxWidth().height(260.dp)
+                    )
+                    Text(
+                        when {
+                            busy -> "Thinking face: reading plans, commitments, alerts and attention signals."
+                            speaking -> "Talking face: speaking your private morning brief now."
+                            todayInsight != null && voiceReady -> "Brief ready. Tap replay if you want to hear it again."
+                            todayInsight != null -> voiceState
+                            else -> "Tap generate and the robot will explain the morning aloud."
+                        },
+                        color = Color.White.copy(alpha = .78f),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                     if (todayInsight != null) {
+                        Button(
+                            onClick = { onSpeak(todayInsight.briefing) },
+                            enabled = voiceReady && !busy,
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.VolumeUp, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (speaking) "Speaking…" else "Replay robot voice")
+                        }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                             Text("Useful?", color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.labelSmall)
                             IconButton(onClick = { onRate(todayInsight.date, true) }) {
@@ -1590,16 +1716,22 @@ private fun IntentRealityCard(
 
 @androidx.compose.runtime.Composable
 private fun MorningBriefRobot(
+    mood: MorningRobotMood,
     speaking: Boolean,
-    alert: Boolean,
     modifier: Modifier = Modifier
 ) {
     val motion = rememberInfiniteTransition(label = "morning-brief-robot")
     val bob by motion.animateFloat(
-        initialValue = -2f,
-        targetValue = 2f,
+        initialValue = -4f,
+        targetValue = 4f,
         animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
         label = "robot-bob"
+    )
+    val sway by motion.animateFloat(
+        initialValue = -1.5f,
+        targetValue = 1.5f,
+        animationSpec = infiniteRepeatable(animation = tween(1300), repeatMode = RepeatMode.Reverse),
+        label = "robot-sway"
     )
     val blink by motion.animateFloat(
         initialValue = 1f,
@@ -1613,36 +1745,100 @@ private fun MorningBriefRobot(
         animationSpec = infiniteRepeatable(animation = tween(if (speaking) 220 else 1200), repeatMode = RepeatMode.Reverse),
         label = "robot-mouth"
     )
-    val eyeColor = if (alert) Color(0xFFFFCE73) else Color(0xFF85F5CB)
+    val eyeColor = when (mood) {
+        MorningRobotMood.Alert -> Color(0xFFFFCE73)
+        MorningRobotMood.Concern -> Color(0xFFFF8A80)
+        MorningRobotMood.Happy -> Color(0xFF85F5CB)
+        else -> Color(0xFF20E5F0)
+    }
 
     Canvas(modifier.offset(y = bob.dp)) {
-        val headWidth = size.width * .82f
-        val headHeight = size.height * .66f
-        val headLeft = (size.width - headWidth) / 2f
-        val headTop = size.height * .12f
-        val corner = CornerRadius(22.dp.toPx(), 22.dp.toPx())
+        val robotHeight = size.height
+        val centerX = size.width / 2f + sway.dp.toPx()
+        val headWidth = robotHeight * .62f
+        val headHeight = robotHeight * .43f
+        val headLeft = centerX - headWidth / 2f
+        val headTop = robotHeight * .08f
+        val screenInset = robotHeight * .045f
 
-        drawRoundRect(Color.White.copy(alpha = .2f), Offset(size.width * .2f, size.height * .82f), Size(size.width * .6f, 8.dp.toPx()), CornerRadius(50f, 50f))
-        drawRoundRect(Color(0xFFE9F3FF), Offset(headLeft, headTop), Size(headWidth, headHeight), corner)
-        drawRoundRect(Color(0xFF06111F), Offset(headLeft + 8.dp.toPx(), headTop + 9.dp.toPx()), Size(headWidth - 16.dp.toPx(), headHeight - 18.dp.toPx()), CornerRadius(18.dp.toPx(), 18.dp.toPx()))
-
-        val eyeHeight = 15.dp.toPx() * blink.coerceIn(.18f, 1f)
-        val eyeTop = headTop + 26.dp.toPx() + (15.dp.toPx() - eyeHeight) / 2f
-        val eyeWidth = 18.dp.toPx()
-        drawRoundRect(eyeColor, Offset(headLeft + 23.dp.toPx(), eyeTop), Size(eyeWidth, eyeHeight), CornerRadius(9.dp.toPx(), 9.dp.toPx()))
-        drawRoundRect(eyeColor, Offset(headLeft + headWidth - 23.dp.toPx() - eyeWidth, eyeTop), Size(eyeWidth, eyeHeight), CornerRadius(9.dp.toPx(), 9.dp.toPx()))
-
-        val mouthWidth = (20.dp.toPx() + 10.dp.toPx() * mouth).coerceAtMost(headWidth * .36f)
-        val mouthHeight = 3.dp.toPx() + 10.dp.toPx() * mouth
         drawRoundRect(
-            Color(0xFFFF8A65),
-            Offset(headLeft + (headWidth - mouthWidth) / 2f, headTop + headHeight - 27.dp.toPx()),
-            Size(mouthWidth, mouthHeight),
-            CornerRadius(9.dp.toPx(), 9.dp.toPx())
+            Color.White.copy(alpha = .18f),
+            Offset(centerX - robotHeight * .34f, robotHeight * .9f),
+            Size(robotHeight * .68f, robotHeight * .04f),
+            CornerRadius(50f, 50f)
         )
 
-        drawRoundRect(Color(0xFF7CA8B6), Offset(size.width * .37f, headTop + headHeight), Size(size.width * .26f, 8.dp.toPx()), CornerRadius(8.dp.toPx(), 8.dp.toPx()))
-        drawRoundRect(Color(0xFF263E3A), Offset(size.width * .29f, headTop + headHeight + 7.dp.toPx()), Size(size.width * .42f, 11.dp.toPx()), CornerRadius(10.dp.toPx(), 10.dp.toPx()))
+        drawRoundRect(Color(0xFF1F2440), Offset(centerX - robotHeight * .46f, robotHeight * .2f), Size(robotHeight * .12f, robotHeight * .24f), CornerRadius(30f, 30f))
+        drawRoundRect(Color(0xFF1F2440), Offset(centerX + robotHeight * .34f, robotHeight * .2f), Size(robotHeight * .12f, robotHeight * .24f), CornerRadius(30f, 30f))
+        drawCircle(Color(0xFF30E8F2), robotHeight * .055f, Offset(centerX - robotHeight * .4f, robotHeight * .31f))
+        drawCircle(Color(0xFF30E8F2), robotHeight * .055f, Offset(centerX + robotHeight * .4f, robotHeight * .31f))
+        drawArc(
+            Color(0xFF7F8CFF),
+            startAngle = 205f,
+            sweepAngle = 130f,
+            useCenter = false,
+            topLeft = Offset(centerX - robotHeight * .38f, robotHeight * .03f),
+            size = Size(robotHeight * .76f, robotHeight * .3f),
+            style = Stroke(robotHeight * .026f)
+        )
+
+        drawRoundRect(Color(0xFFD9EEF4), Offset(headLeft, headTop), Size(headWidth, headHeight), CornerRadius(robotHeight * .08f, robotHeight * .08f))
+        drawRoundRect(Color(0xFF2B2D39), Offset(headLeft + robotHeight * .02f, headTop + robotHeight * .02f), Size(headWidth - robotHeight * .04f, headHeight - robotHeight * .04f), CornerRadius(robotHeight * .07f, robotHeight * .07f))
+        drawRoundRect(Color(0xFF050A12), Offset(headLeft + screenInset, headTop + screenInset), Size(headWidth - screenInset * 2f, headHeight - screenInset * 2f), CornerRadius(robotHeight * .055f, robotHeight * .055f))
+
+        val faceTop = headTop + headHeight * .38f
+        val leftEye = Offset(centerX - headWidth * .22f, faceTop)
+        val rightEye = Offset(centerX + headWidth * .22f, faceTop)
+        val eyeWidth = robotHeight * .09f
+        val eyeHeight = robotHeight * .065f * blink.coerceIn(.18f, 1f)
+        fun drawPixelEye(center: Offset) {
+            drawRoundRect(eyeColor, Offset(center.x - eyeWidth / 2f, center.y - eyeHeight / 2f), Size(eyeWidth, eyeHeight), CornerRadius(eyeWidth / 2f, eyeWidth / 2f))
+        }
+
+        when (mood) {
+            MorningRobotMood.Happy -> {
+                drawArc(eyeColor, 200f, 140f, false, Offset(leftEye.x - eyeWidth / 2f, leftEye.y - eyeHeight), Size(eyeWidth, eyeHeight * 1.6f), style = Stroke(robotHeight * .018f))
+                drawArc(eyeColor, 200f, 140f, false, Offset(rightEye.x - eyeWidth / 2f, rightEye.y - eyeHeight), Size(eyeWidth, eyeHeight * 1.6f), style = Stroke(robotHeight * .018f))
+                drawArc(eyeColor, 20f, 140f, false, Offset(centerX - robotHeight * .07f, headTop + headHeight * .62f), Size(robotHeight * .14f, robotHeight * .08f), style = Stroke(robotHeight * .014f))
+            }
+            MorningRobotMood.Alert -> {
+                drawCircle(eyeColor, robotHeight * .036f, leftEye)
+                drawCircle(eyeColor, robotHeight * .036f, rightEye)
+                drawLine(Color(0xFFFF8A80), Offset(centerX, headTop + headHeight * .62f), Offset(centerX, headTop + headHeight * .72f), robotHeight * .012f)
+                drawCircle(Color(0xFFFF8A80), robotHeight * .007f, Offset(centerX, headTop + headHeight * .76f))
+            }
+            MorningRobotMood.Concern -> {
+                drawArc(eyeColor, 20f, 140f, false, Offset(leftEye.x - eyeWidth / 2f, leftEye.y - eyeHeight / 2f), Size(eyeWidth, eyeHeight * 1.6f), style = Stroke(robotHeight * .018f))
+                drawArc(eyeColor, 20f, 140f, false, Offset(rightEye.x - eyeWidth / 2f, rightEye.y - eyeHeight / 2f), Size(eyeWidth, eyeHeight * 1.6f), style = Stroke(robotHeight * .018f))
+                drawArc(eyeColor, 205f, 130f, false, Offset(centerX - robotHeight * .07f, headTop + headHeight * .72f), Size(robotHeight * .14f, robotHeight * .08f), style = Stroke(robotHeight * .014f))
+            }
+            MorningRobotMood.Thinking -> {
+                drawPixelEye(leftEye)
+                drawPixelEye(rightEye)
+                listOf(-.045f, 0f, .045f).forEach { offset ->
+                    drawCircle(eyeColor.copy(alpha = .85f), robotHeight * .01f, Offset(centerX + robotHeight * offset, headTop + headHeight * .7f))
+                }
+            }
+            else -> {
+                drawPixelEye(leftEye)
+                drawPixelEye(rightEye)
+                val mouthWidth = if (mood == MorningRobotMood.Talking) robotHeight * (.1f + .08f * mouth) else robotHeight * .14f
+                val mouthHeight = if (mood == MorningRobotMood.Talking) robotHeight * (.015f + .04f * mouth) else robotHeight * .015f
+                drawRoundRect(
+                    if (mood == MorningRobotMood.Talking) Color(0xFFFF8A65) else eyeColor,
+                    Offset(centerX - mouthWidth / 2f, headTop + headHeight * .69f),
+                    Size(mouthWidth, mouthHeight),
+                    CornerRadius(robotHeight * .02f, robotHeight * .02f)
+                )
+            }
+        }
+
+        val neckTop = headTop + headHeight
+        drawRoundRect(Color(0xFF20263C), Offset(centerX - robotHeight * .07f, neckTop - robotHeight * .01f), Size(robotHeight * .14f, robotHeight * .08f), CornerRadius(robotHeight * .025f, robotHeight * .025f))
+        drawRoundRect(Color(0xFF151928), Offset(centerX - robotHeight * .27f, neckTop + robotHeight * .07f), Size(robotHeight * .15f, robotHeight * .25f), CornerRadius(robotHeight * .035f, robotHeight * .035f))
+        drawRoundRect(Color(0xFF151928), Offset(centerX + robotHeight * .12f, neckTop + robotHeight * .07f), Size(robotHeight * .15f, robotHeight * .25f), CornerRadius(robotHeight * .035f, robotHeight * .035f))
+        drawRoundRect(Color(0xFF4D5FB8), Offset(centerX - robotHeight * .34f, robotHeight * .8f), Size(robotHeight * .24f, robotHeight * .08f), CornerRadius(robotHeight * .025f, robotHeight * .025f))
+        drawRoundRect(Color(0xFF4D5FB8), Offset(centerX + robotHeight * .1f, robotHeight * .8f), Size(robotHeight * .24f, robotHeight * .08f), CornerRadius(robotHeight * .025f, robotHeight * .025f))
     }
 }
 
