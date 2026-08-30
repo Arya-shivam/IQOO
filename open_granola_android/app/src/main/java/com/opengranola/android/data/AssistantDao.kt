@@ -69,6 +69,9 @@ interface AssistantDao {
     @Query("SELECT * FROM plan_tasks WHERE planId IN (:planIds) AND status != 'done' ORDER BY priority ASC, position ASC")
     suspend fun activeTasks(planIds: List<String>): List<PlanTaskEntity>
 
+    @Query("SELECT * FROM plan_tasks WHERE status = 'done' AND completedAt > 0 ORDER BY completedAt DESC LIMIT :limit")
+    suspend fun recentCompletedTasks(limit: Int): List<PlanTaskEntity>
+
     @Query("SELECT * FROM chat_messages WHERE sessionId = :sessionId ORDER BY createdAt DESC LIMIT :limit")
     suspend fun recentMessages(sessionId: String, limit: Int): List<ChatMessageEntity>
 
@@ -196,12 +199,42 @@ interface AssistantDao {
     @Query("UPDATE plan_tasks SET status = :status WHERE id = :id")
     suspend fun updateTaskStatus(id: String, status: String)
 
+    @Query("UPDATE plan_tasks SET status = 'in_progress', startedAt = :startedAt, completedAt = 0, completionNote = '', completionCredibility = '' WHERE id = :id")
+    suspend fun startTask(id: String, startedAt: Long)
+
+    @Query("UPDATE plan_tasks SET estimatedMinutes = :minutes WHERE id = :id")
+    suspend fun updateTaskEstimate(id: String, minutes: Int)
+
+    @Query("UPDATE plan_tasks SET status = 'done', completedAt = :completedAt, completionNote = :note, completionCredibility = :credibility WHERE id = :id")
+    suspend fun completeTask(id: String, completedAt: Long, note: String, credibility: String)
+
+    @Query("UPDATE plan_tasks SET status = :status, completedAt = 0, completionNote = '', completionCredibility = '' WHERE id = :id")
+    suspend fun reopenTask(id: String, status: String)
+
     @Query("UPDATE graph_nodes SET status = :status, updatedAt = :updatedAt WHERE id = :id OR sourceId = :id")
     suspend fun updateGraphNodeStatus(id: String, status: String, updatedAt: Long)
 
     @Transaction
     suspend fun updateTaskAndGraphStatus(id: String, status: String) {
         updateTaskStatus(id, status)
+        updateGraphNodeStatus(id, status, System.currentTimeMillis())
+    }
+
+    @Transaction
+    suspend fun startTaskAndGraph(id: String, startedAt: Long) {
+        startTask(id, startedAt)
+        updateGraphNodeStatus(id, "in_progress", startedAt)
+    }
+
+    @Transaction
+    suspend fun completeTaskAndGraph(id: String, completedAt: Long, note: String, credibility: String) {
+        completeTask(id, completedAt, note, credibility)
+        updateGraphNodeStatus(id, "done", completedAt)
+    }
+
+    @Transaction
+    suspend fun reopenTaskAndGraph(id: String, status: String) {
+        reopenTask(id, status)
         updateGraphNodeStatus(id, status, System.currentTimeMillis())
     }
 

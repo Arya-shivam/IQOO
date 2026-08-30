@@ -36,6 +36,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+data class TaskCompletionChallenge(
+    val task: PlanTaskEntity,
+    val reasons: List<String>,
+    val trackedSeconds: Long,
+    val completedToday: Int
+)
+
 class MeetingViewModel(application: Application) : AndroidViewModel(application) {
     private val database = OpenGranolaDatabase.get(application)
     private val dao = database.meetingDao()
@@ -44,6 +51,8 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
     private val profilePreferences = application.getSharedPreferences("pa_profile", Application.MODE_PRIVATE)
     private val _userName = MutableStateFlow(profilePreferences.getString("user_name", "Friend") ?: "Friend")
     val userName: StateFlow<String> = _userName.asStateFlow()
+    private val _taskCompletionChallenge = MutableStateFlow<TaskCompletionChallenge?>(null)
+    val taskCompletionChallenge: StateFlow<TaskCompletionChallenge?> = _taskCompletionChallenge.asStateFlow()
 
     val meetings: StateFlow<List<Meeting>> = dao.observeAll()
         .map { entities -> entities.map { it.toModel() } }
@@ -151,7 +160,16 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         assistantDao.saveGoal(GoalEntity("goal:$planId", generated.title, generated.objective, "active", now, now))
         assistantDao.saveEdges(listOf(GraphEdgeEntity(UUID.randomUUID().toString(), "plan", planId, "goal", "goal:$planId", "derived_from", 1f, generated.objective.take(300), now)))
         val tasks = generated.tasks.mapIndexed { index, task ->
-            PlanTaskEntity(UUID.randomUUID().toString(), planId, task.title, task.details, "todo", task.priority, index)
+            PlanTaskEntity(
+                id = UUID.randomUUID().toString(),
+                planId = planId,
+                title = task.title,
+                details = task.details,
+                status = "todo",
+                priority = task.priority,
+                position = index,
+                estimatedMinutes = task.estimatedMinutes.coerceIn(1, 480)
+            )
         }
         assistantDao.saveTasks(tasks)
         assistantDao.saveGraphNodes(buildList {
@@ -184,7 +202,64 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleTask(task: PlanTaskEntity) {
-        viewModelScope.launch { assistantDao.updateTaskAndGraphStatus(task.id, if (task.status == "done") "todo" else "done") }
+        if (task.status == "done") {
+            val reopenedStatus = if (task.startedAt > 0) "in_progress" else "todo"
+            viewModelScope.launch { assistantDao.reopenTaskAndGraph(task.id, reopenedStatus) }
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val completedToday = planTasks.value.filter { it.completedAt >= startOfToday() }
+        val dependencyIds = graphEdges.value.filter { it.type == "requires" && it.fromId == task.id }.map { it.toId }
+        val taskById = planTasks.value.associateBy { it.id }
+        val unfinishedDependencies = dependencyIds.filter { dependencyId -> taskById[dependencyId]?.status != "done" }
+        val trackedSeconds = if (task.startedAt > 0) ((now - task.startedAt).coerceAtLeast(0L) / 1_000L) else 0L
+        val minimumCredibleSeconds = maxOf(30L, task.estimatedMinutes * 60L / 4L)
+        val rapidCompletions = completedToday.count { now - it.completedAt <= COMPLETION_BURST_WINDOW_MS }
+        val trackedTasks = (completedToday + task).distinctBy { it.id }.filter { it.startedAt > 0 }
+        val earliestStart = trackedTasks.minOfOrNull { it.startedAt }
+        val claimedMinutes = trackedTasks.sumOf { it.estimatedMinutes }
+        val activeWindowMinutes = earliestStart?.let { ((now - it).coerceAtLeast(60_000L) / 60_000L).toInt() } ?: 0
+        val reasons = buildList {
+            if (unfinishedDependencies.isNotEmpty()) add("${unfinishedDependencies.size} prerequisite${if (unfinishedDependencies.size == 1) " is" else "s are"} still incomplete.")
+            if (task.startedAt == 0L) add("You never started tracking this task, so pa has no elapsed-work signal.")
+            else if (trackedSeconds < minimumCredibleSeconds) add("Only ${formatDuration(trackedSeconds)} was tracked against a ${task.estimatedMinutes}-minute estimate.")
+            if (rapidCompletions >= MAX_RAPID_COMPLETIONS) add("You already checked off $rapidCompletions tasks in the last minute.")
+            if (trackedTasks.size >= 2 && activeWindowMinutes > 0 && claimedMinutes > activeWindowMinutes * 2) {
+                add("The completed tasks claim $claimedMinutes minutes of work inside a $activeWindowMinutes-minute tracking window.")
+            }
+        }
+        if (reasons.isNotEmpty()) {
+            _taskCompletionChallenge.value = TaskCompletionChallenge(task, reasons, trackedSeconds, completedToday.size)
+            return
+        }
+
+        viewModelScope.launch { assistantDao.completeTaskAndGraph(task.id, now, "", "credible") }
+    }
+
+    fun startTask(task: PlanTaskEntity) {
+        if (task.status == "done" || task.status == "blocked") return
+        viewModelScope.launch { assistantDao.startTaskAndGraph(task.id, System.currentTimeMillis()) }
+    }
+
+    fun updateTaskEstimate(taskId: String, minutes: Int) {
+        viewModelScope.launch { assistantDao.updateTaskEstimate(taskId, minutes.coerceIn(1, 480)) }
+    }
+
+    fun completeChallengedTask(note: String, completedBeforeTracking: Boolean) {
+        val challenge = _taskCompletionChallenge.value ?: return
+        val cleanNote = note.trim().take(500).ifBlank {
+            if (completedBeforeTracking) "Completed before tracking in pa" else "User confirmed completion"
+        }
+        val credibility = if (note.isNotBlank()) "self_reported" else "unverified"
+        viewModelScope.launch {
+            assistantDao.completeTaskAndGraph(challenge.task.id, System.currentTimeMillis(), cleanNote, credibility)
+        }
+        _taskCompletionChallenge.value = null
+    }
+
+    fun dismissTaskCompletionChallenge() {
+        _taskCompletionChallenge.value = null
     }
 
     fun deletePlan(id: String) {
@@ -309,4 +384,14 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
 
     private fun todayKey(): String = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
         .format(java.util.Date())
+
+    private fun formatDuration(seconds: Long): String = when {
+        seconds < 60 -> "$seconds seconds"
+        else -> "${seconds / 60} minutes"
+    }
+
+    private companion object {
+        const val COMPLETION_BURST_WINDOW_MS = 60_000L
+        const val MAX_RAPID_COMPLETIONS = 3
+    }
 }

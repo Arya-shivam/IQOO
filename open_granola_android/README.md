@@ -13,31 +13,35 @@ the existing `geniex_chat_android` GenieX demo in this repository.
 - Transcript and note fields ready for local STT/LLM pipelines
 - No cloud account or network API in the application flow
 
-## Gmail and GitHub sync setup
+## Google and GitHub sign-in
 
-The app uses a WorkManager job that runs roughly every 12 hours, plus the
-`Sync now` button. It only runs when the device is online. Credentials are
-stored with the Android Keystore and synced context stays in the app's private
-storage.
+The Settings screen supports Google Sign in with Credential Manager and GitHub
+OAuth device authorization. Both flows need only a public client ID; never add
+a client secret to the Android project.
 
-For Gmail:
+Add these entries to the untracked `local.properties` file and rebuild:
 
-1. In Google Cloud Console, enable Gmail API and create an OAuth client for a
-   Desktop/installed application.
-2. Obtain a refresh token for the `https://www.googleapis.com/auth/gmail.readonly`
-   scope (OAuth Playground is the quickest manual route).
-3. Paste the client ID, client secret, and refresh token into **Setup**.
+```properties
+GOOGLE_WEB_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
+GITHUB_OAUTH_CLIENT_ID=your-github-oauth-app-client-id
+```
 
-For GitHub:
+Google setup:
 
-1. Create a fine-grained personal access token limited to the repositories you
-   want to read, with **Contents: Read-only** and **Metadata: Read-only**.
-2. Paste the token and comma-separated repositories such as `owner/repo` into
-   **Setup**.
+1. Configure the app in Google Auth Platform, including package
+   `com.opengranola.android` and the signing certificate used for the build.
+2. Create a Web application OAuth client and use that Web client ID above.
 
-No API key is needed for Gmail or GitHub. The Gmail refresh token and GitHub
-token are required; Gmail client ID/secret are only used to refresh the Gmail
-access token.
+GitHub setup:
+
+1. Create a GitHub OAuth App.
+2. Enable **Device Flow** in the OAuth App settings and use its client ID above.
+
+GitHub requests only `read:user`. Its access token is encrypted with Android
+Keystore before it is stored. Google retains the selected account profile
+locally but does not persist the returned ID token. This client-only Google
+connection is appropriate for local personalization; use a backend to validate
+the ID token before treating it as a server authentication boundary.
 
 Calendar uses Android's local calendar provider. Grant Calendar access in the
 app; it needs no additional token or API key and reads the next 14 days of

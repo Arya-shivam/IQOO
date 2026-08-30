@@ -1,5 +1,6 @@
 package com.opengranola.android.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -34,7 +35,12 @@ data class PlanTaskEntity(
     val details: String,
     val status: String,
     val priority: Int,
-    val position: Int
+    val position: Int,
+    @ColumnInfo(defaultValue = "15") val estimatedMinutes: Int = 15,
+    @ColumnInfo(defaultValue = "0") val startedAt: Long = 0,
+    @ColumnInfo(defaultValue = "0") val completedAt: Long = 0,
+    @ColumnInfo(defaultValue = "''") val completionNote: String = "",
+    @ColumnInfo(defaultValue = "''") val completionCredibility: String = ""
 )
 
 @Entity(tableName = "chat_sessions")

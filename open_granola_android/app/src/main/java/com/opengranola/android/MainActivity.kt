@@ -1,8 +1,11 @@
 package com.opengranola.android
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -60,7 +63,13 @@ import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material.icons.rounded.Summarize
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Event
+import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
@@ -122,6 +131,10 @@ import com.opengranola.android.ai.GenieXCatalogModel
 import com.opengranola.android.ai.ManagedModel
 import com.opengranola.android.ai.AssistantTurn
 import com.opengranola.android.ai.InferenceStats
+import com.opengranola.android.auth.ConnectedAccount
+import com.opengranola.android.auth.OAuthProvider
+import com.opengranola.android.auth.OAuthUiState
+import com.opengranola.android.auth.OAuthViewModel
 import com.opengranola.android.data.NotificationEntity
 import com.opengranola.android.data.MemoryEntity
 import com.opengranola.android.data.PlanEntity
@@ -196,6 +209,8 @@ class MainActivity : ComponentActivity() {
     @androidx.compose.runtime.Composable
     private fun OpenGranolaApp() {
         val viewModel: MeetingViewModel = viewModel()
+        val oauthViewModel: OAuthViewModel = viewModel()
+        val oauthState by oauthViewModel.uiState.collectAsState()
         val meetings by viewModel.meetings.collectAsState()
         val recentNotifications by viewModel.recentNotifications.collectAsState()
         val notificationsToday by viewModel.notificationsToday.collectAsState()
@@ -212,6 +227,17 @@ class MainActivity : ComponentActivity() {
         val graphNodes by viewModel.graphNodes.collectAsState()
         val demoNodeCount by viewModel.demoNodeCount.collectAsState()
         val demoState by viewModel.demoState.collectAsState()
+        val taskCompletionChallenge by viewModel.taskCompletionChallenge.collectAsState()
+        var taskEstimateId by rememberSaveable { mutableStateOf<String?>(null) }
+        var taskEstimateDraft by rememberSaveable { mutableStateOf("") }
+        var completionNoteDraft by rememberSaveable { mutableStateOf("") }
+        val taskEstimateTarget = planTasks.firstOrNull { it.id == taskEstimateId }
+        LaunchedEffect(taskEstimateTarget?.id) {
+            taskEstimateDraft = taskEstimateTarget?.estimatedMinutes?.toString().orEmpty()
+        }
+        LaunchedEffect(taskCompletionChallenge?.task?.id) {
+            completionNoteDraft = ""
+        }
         var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
         var dashboardDestinationName by rememberSaveable { mutableStateOf(DashboardDestination.HOME.name) }
         val dashboardDestination = runCatching { DashboardDestination.valueOf(dashboardDestinationName) }
@@ -300,6 +326,12 @@ class MainActivity : ComponentActivity() {
         val calendarPermissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { calendarRefresh++ }
+        LaunchedEffect(oauthState.browserUriToOpen) {
+            oauthState.browserUriToOpen?.let { uri ->
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))) }
+                oauthViewModel.browserOpened()
+            }
+        }
         LaunchedEffect(calendarRefresh) {
             calendarBusy = true
             try {
@@ -313,6 +345,126 @@ class MainActivity : ComponentActivity() {
 
         MaterialTheme {
             Surface(Modifier.fillMaxSize()) {
+                taskCompletionChallenge?.let { challenge ->
+                    AlertDialog(
+                        onDismissRequest = viewModel::dismissTaskCompletionChallenge,
+                        icon = { Icon(Icons.Rounded.TrackChanges, contentDescription = null) },
+                        title = { Text("Seriously, bro?") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text("Don't fool yourself. PA found weak completion signals for “${challenge.task.title}”.")
+                                Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(14.dp)) {
+                                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        challenge.reasons.forEach { reason ->
+                                            Text("• $reason", color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
+                                        }
+                                    }
+                                }
+                                Text(
+                                    "Estimate: ${challenge.task.estimatedMinutes} min · tracked: ${formatTrackedTime(challenge.trackedSeconds)} · ${challenge.completedToday} completed today",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                OutlinedTextField(
+                                    value = completionNoteDraft,
+                                    onValueChange = { completionNoteDraft = it.take(500) },
+                                    label = { Text("What did you actually finish?") },
+                                    supportingText = { Text("A concrete result makes this self-reported, not verified.") },
+                                    minLines = 2,
+                                    maxLines = 4,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    TextButton(onClick = {
+                                        taskEstimateId = challenge.task.id
+                                        viewModel.dismissTaskCompletionChallenge()
+                                    }) { Text("Adjust estimate") }
+                                    TextButton(onClick = { viewModel.completeChallengedTask("", completedBeforeTracking = true) }) {
+                                        Text("Done before tracking")
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = { viewModel.completeChallengedTask(completionNoteDraft, completedBeforeTracking = false) },
+                                enabled = completionNoteDraft.isNotBlank()
+                            ) { Text("Complete with note") }
+                        },
+                        dismissButton = { TextButton(onClick = viewModel::dismissTaskCompletionChallenge) { Text("Keep it open") } }
+                    )
+                }
+                taskEstimateTarget?.let { task ->
+                    AlertDialog(
+                        onDismissRequest = { taskEstimateId = null },
+                        icon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                        title = { Text("Estimate focused work") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(task.title, style = MaterialTheme.typography.titleMedium)
+                                Text("Use a realistic active-work estimate, not calendar waiting time.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                OutlinedTextField(
+                                    value = taskEstimateDraft,
+                                    onValueChange = { value -> taskEstimateDraft = value.filter(Char::isDigit).take(3) },
+                                    label = { Text("Estimated minutes") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    taskEstimateDraft.toIntOrNull()?.let { viewModel.updateTaskEstimate(task.id, it) }
+                                    taskEstimateId = null
+                                },
+                                enabled = taskEstimateDraft.toIntOrNull() in 1..480
+                            ) { Text("Save estimate") }
+                        },
+                        dismissButton = { TextButton(onClick = { taskEstimateId = null }) { Text("Cancel") } }
+                    )
+                }
+                oauthState.githubDeviceCode?.let { deviceCode ->
+                    AlertDialog(
+                        onDismissRequest = oauthViewModel::cancelGitHub,
+                        icon = { Icon(Icons.Rounded.Code, contentDescription = null) },
+                        title = { Text("Finish on GitHub") },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Text("A browser was opened. Enter this one-time code on GitHub:")
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(deviceCode.userCode, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                        IconButton(onClick = {
+                                            val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("GitHub sign-in code", deviceCode.userCode))
+                                        }) { Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy code") }
+                                    }
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Text("Waiting securely for authorization…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(onClick = { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(deviceCode.verificationUri))) }) {
+                                Icon(Icons.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text("Open GitHub")
+                            }
+                        },
+                        dismissButton = { TextButton(onClick = oauthViewModel::cancelGitHub) { Text("Cancel") } }
+                    )
+                }
                 if (showFrontierSettings) {
                     AlertDialog(
                         onDismissRequest = { showFrontierSettings = false },
@@ -460,6 +612,7 @@ class MainActivity : ComponentActivity() {
                         computeUnit = selectedComputeUnit,
                         frontierConfigured = frontierConfigured,
                         frontierModel = frontierModel,
+                        oauthState = oauthState,
                         notificationAccessEnabled = notificationAccessEnabled,
                         onUsagePermission = { startActivity(UsageStatsRepository(this@MainActivity).settingsIntent()) },
                         onNotificationPermission = { NotificationReadService.openSettings(this@MainActivity) },
@@ -471,6 +624,10 @@ class MainActivity : ComponentActivity() {
                             frontierModelDraft = frontierModel
                             showFrontierSettings = true
                         },
+                        onConnectGoogle = { oauthViewModel.connectGoogle(this@MainActivity) },
+                        onDisconnectGoogle = { oauthViewModel.disconnectGoogle(this@MainActivity) },
+                        onConnectGitHub = oauthViewModel::connectGitHub,
+                        onDisconnectGitHub = oauthViewModel::disconnectGitHub,
                         onLoadDemo = viewModel::loadDemoData,
                         onClearDemo = viewModel::clearDemoData,
                         onRefreshUsage = { usageRefresh++ },
@@ -566,6 +723,8 @@ class MainActivity : ComponentActivity() {
                         onAddMemory = viewModel::addMemory,
                         onArchiveMemory = viewModel::archiveMemory,
                         onToggleTask = viewModel::toggleTask,
+                        onStartTask = viewModel::startTask,
+                        onEditTaskEstimate = { task -> taskEstimateId = task.id },
                         onToggleCommitment = viewModel::toggleCommitment,
                         onDeleteCommitment = viewModel::deleteCommitment,
                         onRateDailyInsight = viewModel::rateDailyInsight,
@@ -724,6 +883,7 @@ private fun AssistantDashboard(
     computeUnit: String,
     frontierConfigured: Boolean,
     frontierModel: String,
+    oauthState: OAuthUiState,
     notificationAccessEnabled: Boolean,
     onUsagePermission: () -> Unit,
     onNotificationPermission: () -> Unit,
@@ -731,6 +891,10 @@ private fun AssistantDashboard(
     onRefreshCalendar: () -> Unit,
     onLoadModel: () -> Unit,
     onFrontierSettings: () -> Unit,
+    onConnectGoogle: () -> Unit,
+    onDisconnectGoogle: () -> Unit,
+    onConnectGitHub: () -> Unit,
+    onDisconnectGitHub: () -> Unit,
     onLoadDemo: () -> Unit,
     onClearDemo: () -> Unit,
     onRefreshUsage: () -> Unit,
@@ -740,6 +904,8 @@ private fun AssistantDashboard(
     onAddMemory: (String) -> Unit,
     onArchiveMemory: (String) -> Unit,
     onToggleTask: (PlanTaskEntity) -> Unit,
+    onStartTask: (PlanTaskEntity) -> Unit,
+    onEditTaskEstimate: (PlanTaskEntity) -> Unit,
     onToggleCommitment: (CommitmentEntity) -> Unit,
     onDeleteCommitment: (String) -> Unit,
     onRateDailyInsight: (String, Boolean) -> Unit,
@@ -1059,9 +1225,16 @@ private fun AssistantDashboard(
                 )
                 if (plans.isEmpty()) Text("No plans yet. pa will store generated plans here.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 plans.forEach { plan ->
-                    PlanCard(plan, planTasks.filter { it.planId == plan.id }, graphEdges, graphNodes, onToggleTask) {
-                        planPendingDelete = plan
-                    }
+                    PlanCard(
+                        plan = plan,
+                        tasks = planTasks.filter { it.planId == plan.id },
+                        edges = graphEdges,
+                        nodes = graphNodes,
+                        onToggleTask = onToggleTask,
+                        onStartTask = onStartTask,
+                        onEditEstimate = onEditTaskEstimate,
+                        onDelete = { planPendingDelete = plan }
+                    )
                 }
                 Divider()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1102,21 +1275,13 @@ private fun AssistantDashboard(
                 ModelCard(modelName = modelName, modelState = modelState, computeUnit = computeUnit, onLoadModel = onLoadModel)
                 FrontierCard(configured = frontierConfigured, model = frontierModel, onClick = onFrontierSettings)
                 Text("ACCOUNTS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Connect services", style = MaterialTheme.typography.titleMedium)
-                        Text("Google and GitHub sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Google", style = MaterialTheme.typography.bodyLarge)
-                            Text("Not connected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
-                        }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("GitHub", style = MaterialTheme.typography.bodyLarge)
-                            Text("Not connected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
-                        }
-                        Text("OAuth sign-in is visible here and will be enabled after provider credentials are configured.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                OAuthAccountsCard(
+                    state = oauthState,
+                    onConnectGoogle = onConnectGoogle,
+                    onDisconnectGoogle = onDisconnectGoogle,
+                    onConnectGitHub = onConnectGitHub,
+                    onDisconnectGitHub = onDisconnectGitHub
+                )
                 Text("DATA ACCESS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 SettingsAccessCard(
                     title = "Usage insights",
@@ -1141,6 +1306,130 @@ private fun AssistantDashboard(
         }
     }
 }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun OAuthAccountsCard(
+    state: OAuthUiState,
+    onConnectGoogle: () -> Unit,
+    onDisconnectGoogle: () -> Unit,
+    onConnectGitHub: () -> Unit,
+    onDisconnectGitHub: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp)) {
+                    Icon(
+                        Icons.Rounded.Link,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(9.dp)
+                    )
+                }
+                Spacer(Modifier.width(11.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Connected accounts", style = MaterialTheme.typography.titleMedium)
+                    Text("Private account links for pa", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            OAuthAccountRow(
+                providerName = "Google",
+                icon = Icons.Rounded.Language,
+                account = state.google,
+                configured = state.googleConfigured,
+                busy = state.busyProvider == OAuthProvider.GOOGLE,
+                onConnect = onConnectGoogle,
+                onDisconnect = onDisconnectGoogle
+            )
+            Divider()
+            OAuthAccountRow(
+                providerName = "GitHub",
+                icon = Icons.Rounded.Code,
+                account = state.github,
+                configured = state.githubConfigured,
+                busy = state.busyProvider == OAuthProvider.GITHUB,
+                onConnect = onConnectGitHub,
+                onDisconnect = onDisconnectGitHub
+            )
+            state.message?.let { message ->
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
+                    Text(
+                        message,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            if (!state.googleConfigured || !state.githubConfigured) {
+                Text(
+                    "Add the missing public client IDs to local.properties, then rebuild the app.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            } else {
+                Text(
+                    "GitHub uses a one-time browser code; its token is encrypted by Android Keystore. Google stores profile details only.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun OAuthAccountRow(
+    providerName: String,
+    icon: ImageVector,
+    account: ConnectedAccount?,
+    configured: Boolean,
+    busy: Boolean,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
+            Icon(icon, contentDescription = null, modifier = Modifier.padding(9.dp), tint = MaterialTheme.colorScheme.primary)
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(providerName, style = MaterialTheme.typography.titleSmall)
+            Text(
+                when {
+                    busy -> if (providerName == "GitHub") "Waiting for authorization…" else "Opening account picker…"
+                    account != null -> account.displayName
+                    configured -> "Ready to connect"
+                    else -> "Client ID required"
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1
+            )
+            account?.takeIf { it.handle != it.displayName }?.let {
+                Text(it.handle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
+        }
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.5.dp)
+        } else if (account == null) {
+            Button(onClick = onConnect, enabled = configured, modifier = Modifier.height(42.dp)) {
+                Icon(Icons.Rounded.Link, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Connect")
+            }
+        } else {
+            OutlinedButton(onClick = onDisconnect, modifier = Modifier.height(42.dp)) {
+                Icon(Icons.Rounded.LinkOff, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Disconnect")
+            }
+        }
     }
 }
 
@@ -1870,6 +2159,8 @@ private fun PlanCard(
     edges: List<GraphEdgeEntity>,
     nodes: List<GraphNodeEntity>,
     onToggleTask: (PlanTaskEntity) -> Unit,
+    onStartTask: (PlanTaskEntity) -> Unit,
+    onEditEstimate: (PlanTaskEntity) -> Unit,
     onDelete: () -> Unit
 ) {
     val completed = tasks.count { it.status == "done" }
@@ -1890,14 +2181,26 @@ private fun PlanCard(
             LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
             tasks.forEach { task ->
                 val prerequisites = edges.filter { it.type == "requires" && it.fromId == task.id }
-                Surface(onClick = { onToggleTask(task) }, color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            if (task.status == "done") Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                            contentDescription = if (task.status == "done") "Completed" else "Not completed",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Column(Modifier.weight(1f)) {
+                val taskById = tasks.associateBy { it.id }
+                val unresolvedPrerequisites = prerequisites.count { dependency -> taskById[dependency.toId]?.status != "done" }
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(14.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { onToggleTask(task) }, modifier = Modifier.size(38.dp)) {
+                                Icon(
+                                    when (task.status) {
+                                        "done" -> Icons.Rounded.CheckCircle
+                                        "in_progress" -> Icons.Rounded.TrackChanges
+                                        else -> Icons.Rounded.RadioButtonUnchecked
+                                    },
+                                    contentDescription = if (task.status == "done") "Reopen task" else "Complete task",
+                                    tint = when {
+                                        task.status == "blocked" || unresolvedPrerequisites > 0 -> MaterialTheme.colorScheme.error
+                                        else -> MaterialTheme.colorScheme.primary
+                                    }
+                                )
+                            }
+                            Column(Modifier.weight(1f)) {
                             Text(task.title, style = MaterialTheme.typography.titleSmall)
                             if (task.details.isNotBlank()) Text(task.details, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                             if (prerequisites.isNotEmpty()) {
@@ -1912,12 +2215,67 @@ private fun PlanCard(
                                 )
                             }
                         }
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { onEditEstimate(task) }, modifier = Modifier.height(38.dp)) {
+                                Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("Est. ${task.estimatedMinutes} min")
+                            }
+                            when (task.status) {
+                                "done" -> {
+                                    val credibility = when (task.completionCredibility) {
+                                        "credible" -> "CREDIBLE"
+                                        "self_reported" -> "SELF-REPORTED"
+                                        "unverified" -> "UNVERIFIED"
+                                        else -> "DONE"
+                                    }
+                                    Surface(
+                                        color = if (task.completionCredibility == "credible") Color(0xFFDDEFE8) else MaterialTheme.colorScheme.errorContainer,
+                                        shape = RoundedCornerShape(50)
+                                    ) {
+                                        Text(
+                                            credibility,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                            color = if (task.completionCredibility == "credible") Color(0xFF315F53) else MaterialTheme.colorScheme.onErrorContainer,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                                "in_progress" -> Text(
+                                    "Started ${formatTaskStart(task.startedAt)}",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                else -> OutlinedButton(
+                                    onClick = { onStartTask(task) },
+                                    enabled = task.status != "blocked" && unresolvedPrerequisites == 0,
+                                    modifier = Modifier.height(38.dp)
+                                ) {
+                                    Icon(Icons.Rounded.TrackChanges, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(5.dp))
+                                    Text("Start")
+                                }
+                            }
+                        }
+                        if (task.completionNote.isNotBlank()) {
+                            Text("Completion note: ${task.completionNote}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
         }
     }
 }
+
+private fun formatTrackedTime(seconds: Long): String = when {
+    seconds < 60 -> "${seconds}s"
+    seconds < 3_600 -> "${seconds / 60}m"
+    else -> "${seconds / 3_600}h ${seconds % 3_600 / 60}m"
+}
+
+private fun formatTaskStart(timestamp: Long): String = if (timestamp <= 0L) "not tracked" else
+    SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(timestamp))
 
 @androidx.compose.runtime.Composable
 private fun GraphMemoryScreen(

@@ -26,7 +26,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GraphEdgeEntity::class,
         CurationQueueEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class OpenGranolaDatabase : RoomDatabase() {
@@ -42,7 +42,7 @@ abstract class OpenGranolaDatabase : RoomDatabase() {
                 context.applicationContext,
                 OpenGranolaDatabase::class.java,
                 "open_granola.db"
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -96,6 +96,16 @@ abstract class OpenGranolaDatabase : RoomDatabase() {
                 db.execSQL("INSERT OR IGNORE INTO graph_nodes SELECT 'task:' || id, 'task', title, details, '', status, id, 0, 0 FROM plan_tasks")
                 db.execSQL("INSERT OR IGNORE INTO graph_nodes SELECT id, 'action', title, summary, tags, linkStatus, sourceId, createdAt, createdAt FROM actions")
                 db.execSQL("INSERT OR IGNORE INTO graph_nodes SELECT 'memory:' || id, 'fact', substr(text, 1, 100), text, tags, CASE archived WHEN 1 THEN 'archived' ELSE 'active' END, id, createdAt, lastUsedAt FROM memories")
+            }
+        }
+
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE plan_tasks ADD COLUMN estimatedMinutes INTEGER NOT NULL DEFAULT 15")
+                db.execSQL("ALTER TABLE plan_tasks ADD COLUMN startedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE plan_tasks ADD COLUMN completedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE plan_tasks ADD COLUMN completionNote TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE plan_tasks ADD COLUMN completionCredibility TEXT NOT NULL DEFAULT ''")
             }
         }
     }

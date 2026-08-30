@@ -11,7 +11,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** Small encrypted preference store for user-provided frontier credentials. */
+/** Small encrypted preference store for user-provided credentials and OAuth tokens. */
 class SecureSecretStore(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences("secure_secrets", Context.MODE_PRIVATE)
 

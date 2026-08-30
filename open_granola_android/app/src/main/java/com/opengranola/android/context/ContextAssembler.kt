@@ -37,6 +37,7 @@ class ContextAssembler(private val database: OpenGranolaDatabase) {
         val neighborhood = graphNodes.filter { it.id in neighborhoodIds }.take(28)
         val plans = assistant.activePlans(3)
         val tasks = if (plans.isEmpty()) emptyList() else assistant.activeTasks(plans.map { it.id })
+        val completedTasks = assistant.recentCompletedTasks(8)
         val commitments = assistant.activeCommitments(8)
         val messages = assistant.recentMessages(DEFAULT_SESSION, 8).reversed()
         // Meeting memory is intentionally summary-only. Raw transcripts never
@@ -100,7 +101,18 @@ class ContextAssembler(private val database: OpenGranolaDatabase) {
                 appendLine("\nActive plans:")
                 plans.forEach { plan ->
                     appendLine("- ${plan.title}: ${plan.objective}")
-                    tasks.filter { it.planId == plan.id }.take(6).forEach { appendLine("  - [${it.status}] ${it.title}: ${it.details}") }
+                    tasks.filter { it.planId == plan.id }.take(6).forEach {
+                        appendLine("  - [${it.status}] ${it.title} (${it.estimatedMinutes} min estimate): ${it.details}")
+                    }
+                }
+            }
+            if (completedTasks.isNotEmpty()) {
+                appendLine("\nRecent task completion credibility:")
+                completedTasks.forEach { task ->
+                    appendLine(
+                        "- [${task.completionCredibility.ifBlank { "legacy/unverified" }}] ${task.title}; " +
+                            "estimate=${task.estimatedMinutes}m; note=${task.completionNote.ifBlank { "none" }.take(180)}"
+                    )
                 }
             }
             if (commitments.isNotEmpty()) {

@@ -1,0 +1,4 @@
+# Copy these public client IDs into local.properties. Never put a client secret in the app.
+GOOGLE_WEB_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
+GITHUB_OAUTH_CLIENT_ID=your-github-oauth-app-client-id
+Ov23liOo1wI3yWZgiqjj

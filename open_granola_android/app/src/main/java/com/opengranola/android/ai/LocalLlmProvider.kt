@@ -28,7 +28,13 @@ interface LocalLlmProvider {
 }
 
 data class AssistantTurn(val role: String, val content: String)
-data class GeneratedTask(val title: String, val details: String, val priority: Int, val dependsOn: List<Int> = emptyList())
+data class GeneratedTask(
+    val title: String,
+    val details: String,
+    val priority: Int,
+    val dependsOn: List<Int> = emptyList(),
+    val estimatedMinutes: Int = 15
+)
 data class GeneratedPlan(val title: String, val objective: String, val tasks: List<GeneratedTask>, val blockers: List<String> = emptyList())
 data class GeneratedCommitment(
     val title: String,
@@ -122,7 +128,8 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
         val messages = history.takeLast(4).map { ChatMessage(it.role, it.content) }.toMutableList()
         messages += ChatMessage("user", """
             You are pa, a private local personal assistant. Use only relevant context below.
-            Be concise, acknowledge uncertainty, and never claim an action was executed.
+            $STRICT_COACH_INSTRUCTIONS
+            Never claim an action was executed.
 
             LOCAL CONTEXT:
             $context
@@ -136,9 +143,12 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     override suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
         val raw = generate(arrayOf(ChatMessage("user", """
             You are pa. Create a practical plan using relevant local context.
+            $STRICT_COACH_INSTRUCTIONS
+            Reject fantasy scheduling and expose missing prerequisites plainly.
             Return only JSON with this shape:
-            {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[]}]}
+            {"title":"...","objective":"...","tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[],"estimatedMinutes":20}]}
             dependsOn contains zero-based task indexes only. Use it for real prerequisites; use [] when none are known.
+            estimatedMinutes must be a realistic focused-work estimate from 1 to 480 minutes.
             Use 3-7 concrete tasks. Priority 1 is highest. Do not include markdown fences.
 
             Objective: $objective
@@ -175,7 +185,8 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     override suspend fun generateDailyBriefing(context: String): InferenceResult {
         return generate(arrayOf(ChatMessage("user", """
             You are pa, a private intent-to-reality assistant. Create a concise daily briefing from the local context.
-            Compare open commitments and plans with notification and app-usage signals. Be supportive, factual, and never judgmental.
+            $STRICT_COACH_INSTRUCTIONS
+            Compare open commitments and plans with notification and app-usage signals.
             Write exactly three short sections: Focus, Reality check, Next step.
             Do not invent deadlines or claim an action was completed. Keep the whole response under 130 words.
 
@@ -241,7 +252,8 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
                     task.getString("title"),
                     task.optString("details"),
                     task.optInt("priority", index + 1),
-                    task.optJSONArray("dependsOn")?.let { deps -> (0 until deps.length()).map { deps.optInt(it, -1) }.filter { it >= 0 } } ?: emptyList()
+                    task.optJSONArray("dependsOn")?.let { deps -> (0 until deps.length()).map { deps.optInt(it, -1) }.filter { it >= 0 } } ?: emptyList(),
+                    task.optInt("estimatedMinutes", 15).coerceIn(1, 480)
                 )
             }
             GeneratedPlan(json.optString("title", "Plan"), json.optString("objective", objective), tasks)

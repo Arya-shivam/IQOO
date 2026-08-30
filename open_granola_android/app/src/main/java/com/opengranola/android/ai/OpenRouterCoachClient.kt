@@ -24,7 +24,7 @@ class OpenRouterCoachClient(context: Context) {
     fun saveModel(value: String) = preferences.edit().putString(KEY_MODEL, value.trim().ifBlank { DEFAULT_MODEL }).apply()
 
     suspend fun chat(message: String, context: String, history: List<AssistantTurn>): String = complete(
-        listOf(FrontierMessage("system", "You are pa, a careful personal coach. Use only the curated context. Never claim an action was executed. Reply in at most 5 short lines, each starting with •. No Markdown headings, asterisks, or dashes.")) +
+        listOf(FrontierMessage("system", "You are pa. $STRICT_COACH_INSTRUCTIONS Use only the curated context. Never claim an action was executed. Reply in at most 5 short lines, each starting with •. No Markdown headings, asterisks, or dashes.")) +
             history.takeLast(6).map { FrontierMessage(it.role, it.content) } +
             FrontierMessage("user", "CURATED CONTEXT:\n$context\n\nUSER MESSAGE:\n$message"),
         768
@@ -32,10 +32,12 @@ class OpenRouterCoachClient(context: Context) {
 
     suspend fun generatePlan(objective: String, context: String): GeneratedPlan {
         val raw = complete(listOf(FrontierMessage("user", """
-            Create a practical plan from this curated context.
-            Return only JSON: {"title":"...","objective":"...","blockers":["..."],"tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[]}]}
+            You are pa. $STRICT_COACH_INSTRUCTIONS
+            Create a practical plan from this curated context. Reject fantasy scheduling and expose missing prerequisites plainly.
+            Return only JSON: {"title":"...","objective":"...","blockers":["..."],"tasks":[{"title":"...","details":"...","priority":1,"dependsOn":[],"estimatedMinutes":20}]}
             Inspect the context for unfinished skills, tasks, or prerequisites that can block this objective. Put up to 3 concise, evidence-based warnings in blockers; use [] when none exist.
             dependsOn contains zero-based indexes of real prerequisite tasks. Use [] when no prerequisite is known.
+            estimatedMinutes must be a realistic focused-work estimate from 1 to 480 minutes.
             Use 3-7 concrete tasks. Do not claim anything is already done.
             OBJECTIVE: $objective
             CURATED CONTEXT: $context
@@ -51,7 +53,8 @@ class OpenRouterCoachClient(context: Context) {
                         task.getString("title"),
                         task.optString("details"),
                         task.optInt("priority", index + 1),
-                        task.optJSONArray("dependsOn")?.let { deps -> (0 until deps.length()).map { deps.optInt(it, -1) }.filter { it >= 0 } } ?: emptyList()
+                        task.optJSONArray("dependsOn")?.let { deps -> (0 until deps.length()).map { deps.optInt(it, -1) }.filter { it >= 0 } } ?: emptyList(),
+                        task.optInt("estimatedMinutes", 15).coerceIn(1, 480)
                     )
                 }
             }
@@ -65,6 +68,7 @@ class OpenRouterCoachClient(context: Context) {
     }
 
     suspend fun generateDailyBriefing(context: String): String = complete(listOf(FrontierMessage("user", """
+        You are pa. $STRICT_COACH_INSTRUCTIONS
         Create a concise daily briefing from the curated context below.
         Write exactly three one-line sections: Focus, Reality check, Next step. Maximum 75 words total.
         No preamble, bullets, explanations, repetition, or extra sections.
