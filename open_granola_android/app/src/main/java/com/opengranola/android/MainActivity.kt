@@ -9,6 +9,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -96,6 +101,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
@@ -1526,11 +1534,32 @@ private fun IntentRealityCard(
                 },
                 color = Color.White.copy(alpha = .86f)
             )
-            if (todayInsight != null) {
-                Surface(color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("TODAY'S PRIVATE BRIEFING", color = Color(0xFFFFCE73), style = MaterialTheme.typography.labelMedium)
-                        Text(todayInsight.briefing, color = Color.White)
+            Surface(color = Color.White.copy(alpha = .08f), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("MORNING PA-BOT", color = Color(0xFFFFCE73), style = MaterialTheme.typography.labelMedium)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        MorningBriefRobot(
+                            speaking = busy || todayInsight != null,
+                            alert = notificationsToday > 12,
+                            modifier = Modifier.size(92.dp)
+                        )
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                when {
+                                    busy -> "Scanning your plans, commitments, alerts and attention signals."
+                                    todayInsight != null -> "Here is your private morning brief, spoken in pa's little robot voice."
+                                    else -> "Tap generate and pa will explain the morning like a desk companion."
+                                },
+                                color = Color.White.copy(alpha = .74f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                todayInsight?.briefing ?: "I'll light up the important focus, reality check and next step once today's context is ready.",
+                                color = Color.White
+                            )
+                        }
+                    }
+                    if (todayInsight != null) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                             Text("Useful?", color = Color.White.copy(alpha = .65f), style = MaterialTheme.typography.labelSmall)
                             IconButton(onClick = { onRate(todayInsight.date, true) }) {
@@ -1548,14 +1577,72 @@ private fun IntentRealityCard(
                 if (busy) {
                     CircularProgressIndicator(modifier = Modifier.size(21.dp), strokeWidth = 2.5.dp)
                     Spacer(Modifier.width(9.dp))
-                    Text("Reading today's local signals")
+                    Text("pa-bot is reading today's signals")
                 } else {
                     Icon(Icons.Rounded.AutoAwesome, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (todayInsight == null) "Generate daily briefing" else "Refresh daily briefing")
+                    Text(if (todayInsight == null) "Generate morning brief" else "Refresh morning brief")
                 }
             }
         }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun MorningBriefRobot(
+    speaking: Boolean,
+    alert: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val motion = rememberInfiniteTransition(label = "morning-brief-robot")
+    val bob by motion.animateFloat(
+        initialValue = -2f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
+        label = "robot-bob"
+    )
+    val blink by motion.animateFloat(
+        initialValue = 1f,
+        targetValue = .22f,
+        animationSpec = infiniteRepeatable(animation = tween(if (speaking) 520 else 1500), repeatMode = RepeatMode.Reverse),
+        label = "robot-blink"
+    )
+    val mouth by motion.animateFloat(
+        initialValue = if (speaking) .25f else .08f,
+        targetValue = if (speaking) 1f else .16f,
+        animationSpec = infiniteRepeatable(animation = tween(if (speaking) 220 else 1200), repeatMode = RepeatMode.Reverse),
+        label = "robot-mouth"
+    )
+    val eyeColor = if (alert) Color(0xFFFFCE73) else Color(0xFF85F5CB)
+
+    Canvas(modifier.offset(y = bob.dp)) {
+        val headWidth = size.width * .82f
+        val headHeight = size.height * .66f
+        val headLeft = (size.width - headWidth) / 2f
+        val headTop = size.height * .12f
+        val corner = CornerRadius(22.dp.toPx(), 22.dp.toPx())
+
+        drawRoundRect(Color.White.copy(alpha = .2f), Offset(size.width * .2f, size.height * .82f), Size(size.width * .6f, 8.dp.toPx()), CornerRadius(50f, 50f))
+        drawRoundRect(Color(0xFFE9F3FF), Offset(headLeft, headTop), Size(headWidth, headHeight), corner)
+        drawRoundRect(Color(0xFF06111F), Offset(headLeft + 8.dp.toPx(), headTop + 9.dp.toPx()), Size(headWidth - 16.dp.toPx(), headHeight - 18.dp.toPx()), CornerRadius(18.dp.toPx(), 18.dp.toPx()))
+
+        val eyeHeight = 15.dp.toPx() * blink.coerceIn(.18f, 1f)
+        val eyeTop = headTop + 26.dp.toPx() + (15.dp.toPx() - eyeHeight) / 2f
+        val eyeWidth = 18.dp.toPx()
+        drawRoundRect(eyeColor, Offset(headLeft + 23.dp.toPx(), eyeTop), Size(eyeWidth, eyeHeight), CornerRadius(9.dp.toPx(), 9.dp.toPx()))
+        drawRoundRect(eyeColor, Offset(headLeft + headWidth - 23.dp.toPx() - eyeWidth, eyeTop), Size(eyeWidth, eyeHeight), CornerRadius(9.dp.toPx(), 9.dp.toPx()))
+
+        val mouthWidth = (20.dp.toPx() + 10.dp.toPx() * mouth).coerceAtMost(headWidth * .36f)
+        val mouthHeight = 3.dp.toPx() + 10.dp.toPx() * mouth
+        drawRoundRect(
+            Color(0xFFFF8A65),
+            Offset(headLeft + (headWidth - mouthWidth) / 2f, headTop + headHeight - 27.dp.toPx()),
+            Size(mouthWidth, mouthHeight),
+            CornerRadius(9.dp.toPx(), 9.dp.toPx())
+        )
+
+        drawRoundRect(Color(0xFF7CA8B6), Offset(size.width * .37f, headTop + headHeight), Size(size.width * .26f, 8.dp.toPx()), CornerRadius(8.dp.toPx(), 8.dp.toPx()))
+        drawRoundRect(Color(0xFF263E3A), Offset(size.width * .29f, headTop + headHeight + 7.dp.toPx()), Size(size.width * .42f, 11.dp.toPx()), CornerRadius(10.dp.toPx(), 10.dp.toPx()))
     }
 }
 

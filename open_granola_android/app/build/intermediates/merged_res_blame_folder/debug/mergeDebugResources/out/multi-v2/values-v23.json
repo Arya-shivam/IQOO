@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.opengranola.android.app-mergeDebugResources-53:/values-v23/values-v23.xml",
+            "map": [
+                {
+                    "source": "/home/nandish/.gradle/caches/9.3.0/transforms/edd93139ba6e8c1443e2417131a3625f/transformed/work-runtime-2.9.0/res/values-v23/values-v23.xml",
+                    "from": {
+                        "startLines": "2,3",
+                        "startColumns": "4,4",
+                        "startOffsets": "55,121",
+                        "endColumns": "65,62",
+                        "endOffsets": "116,179"
+                    }
+                }
+            ]
+        }
+    ]
+}

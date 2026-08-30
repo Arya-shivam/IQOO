@@ -1,0 +1,26 @@
+[
+    {
+        "merged": "com.opengranola.android.app-debug-55:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "com.opengranola.android.app-main-57:/mipmap-anydpi-v26/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.opengranola.android.app-debug-55:/mipmap-anydpi-v33_ic_launcher_round.xml.flat",
+        "source": "com.opengranola.android.app-main-57:/mipmap-anydpi-v33/ic_launcher_round.xml"
+    },
+    {
+        "merged": "com.opengranola.android.app-debug-55:/drawable_ic_launcher_monochrome.xml.flat",
+        "source": "com.opengranola.android.app-main-57:/drawable/ic_launcher_monochrome.xml"
+    },
+    {
+        "merged": "com.opengranola.android.app-debug-55:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "com.opengranola.android.app-main-57:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "com.opengranola.android.app-debug-55:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "com.opengranola.android.app-main-57:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "com.opengranola.android.app-debug-55:/mipmap-anydpi-v33_ic_launcher.xml.flat",
+        "source": "com.opengranola.android.app-main-57:/mipmap-anydpi-v33/ic_launcher.xml"
+    }
+]
