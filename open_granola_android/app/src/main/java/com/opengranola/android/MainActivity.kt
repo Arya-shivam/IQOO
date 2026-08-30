@@ -975,6 +975,22 @@ private fun AssistantDashboard(
                 Text("AI MODELS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 ModelCard(modelName = modelName, modelState = modelState, computeUnit = computeUnit, onLoadModel = onLoadModel)
                 FrontierCard(configured = frontierConfigured, model = frontierModel, onClick = onFrontierSettings)
+                Text("ACCOUNTS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Connect services", style = MaterialTheme.typography.titleMedium)
+                        Text("Google and GitHub sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Google", style = MaterialTheme.typography.bodyLarge)
+                            Text("Not connected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("GitHub", style = MaterialTheme.typography.bodyLarge)
+                            Text("Not connected", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                        }
+                        Text("OAuth sign-in is visible here and will be enabled after provider credentials are configured.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
                 Text("DATA ACCESS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 SettingsAccessCard(
                     title = "Usage insights",
