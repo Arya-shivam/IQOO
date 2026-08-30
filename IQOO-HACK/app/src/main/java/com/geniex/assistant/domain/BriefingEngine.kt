@@ -11,7 +11,7 @@ class BriefingEngine(private val importanceScorer: ImportanceScorer) {
         val openTasks = tasks.filter { it.status != TaskStatus.COMPLETED }
         if (openTasks.isEmpty()) {
             return Briefing(
-                message = "Good morning. You are clear for today. Consider learning or recovery time.",
+                message = "Good morning. Your plate is clear right now. I would use this window for planning, learning, or recovery before something urgent appears.",
                 topTasks = emptyList()
             )
         }
@@ -20,28 +20,45 @@ class BriefingEngine(private val importanceScorer: ImportanceScorer) {
             .sortedByDescending { importanceScorer.score(it, today) }
             .take(3)
 
-        val bullets = top.map { task ->
+        val taskReads = top.map { task ->
             val due = task.deadlineEpochDay?.let { d ->
                 val days = d - today.toEpochDay()
                 when {
+                    days < 0 -> "already overdue"
                     days <= 0 -> "due today"
                     days == 1L -> "due tomorrow"
                     else -> "due in $days days"
                 }
             } ?: "no deadline"
-            "${task.title} ($due)"
+            val blocker = task.blockedReason?.let { " It is blocked because $it, so I would clear that first." }.orEmpty()
+            "${task.title} is $due.$blocker"
         }
 
         val message = buildString {
-            append("Good morning. You have ")
-            append(top.size)
-            append(" key focus item")
-            if (top.size > 1) append("s")
-            append(" today. Start with ")
-            append(top.first().title)
+            val first = top.first()
+            append("Good morning. I'd start with ")
+            append(first.title)
+            append(" today")
+            first.deadlineEpochDay?.let { deadline ->
+                val days = deadline - today.toEpochDay()
+                append(
+                    when {
+                        days < 0 -> " because it is already overdue"
+                        days == 0L -> " because it is due today"
+                        days == 1L -> " because it is due tomorrow"
+                        days <= 3L -> " because the deadline is close"
+                        else -> " because it has the strongest priority signal"
+                    }
+                )
+            } ?: append(" because it has the strongest priority signal")
             append(".")
+            if (top.size > 1) {
+                append(" After that, I would keep ")
+                append(top.drop(1).joinToString(" and ") { it.title })
+                append(" in view, but not let them distract from the first move.")
+            }
         }
 
-        return Briefing(message = message, topTasks = bullets)
+        return Briefing(message = message, topTasks = taskReads)
     }
 }

@@ -25,11 +25,9 @@ class MainActivity : ComponentActivity() {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
             GenieXApp(
                 state = state,
-                onCreateGoal = viewModel::createGoal,
-                onCompleteTask = viewModel::completeTask,
-                onProcessMeeting = viewModel::processMeeting,
-                onSaveModelConfig = viewModel::saveModelConfig,
-                onRequestRecommendation = viewModel::requestRecommendation,
+                onSubmitChatInput = viewModel::submitChatInput,
+                onUpdateTask = viewModel::updateTask,
+                onClearAllData = viewModel::clearAllData,
                 onDismissMessage = viewModel::clearMessage
             )
         }

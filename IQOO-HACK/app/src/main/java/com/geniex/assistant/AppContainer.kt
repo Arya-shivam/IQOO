@@ -8,6 +8,7 @@ import com.geniex.assistant.domain.BriefingEngine
 import com.geniex.assistant.domain.ImportanceScorer
 import com.geniex.assistant.domain.PlanningEngine
 import com.geniex.assistant.domain.ProactiveEngine
+import com.geniex.assistant.domain.ScheduleEngine
 import com.geniex.assistant.llm.GenieXQwenLocalBridge
 import com.geniex.assistant.llm.ModelConfig
 
@@ -19,6 +20,7 @@ class AppContainer(context: Context) {
     val repository = AssistantRepository(database)
 
     private val localModelBridge = GenieXQwenLocalBridge(
+        context = appContext,
         modelDirectoryProvider = {
             repository.getSetting(ModelConfig.KEY_MODEL_DIRECTORY)
         }
@@ -29,6 +31,7 @@ class AppContainer(context: Context) {
         planningEngine = PlanningEngine(),
         briefingEngine = BriefingEngine(ImportanceScorer()),
         proactiveEngine = ProactiveEngine(),
+        scheduleEngine = ScheduleEngine(ImportanceScorer()),
         localModelBridge = localModelBridge
     )
 }

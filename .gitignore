@@ -1,0 +1,7 @@
+# Local GGUF model artifacts
+*.gguf
+*.gguf.*
+*.GGUF
+*.GGUF.*
+gguf/
+ggufs/

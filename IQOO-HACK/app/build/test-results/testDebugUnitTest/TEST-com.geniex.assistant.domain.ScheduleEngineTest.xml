@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.geniex.assistant.domain.ScheduleEngineTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-29T17:58:45" hostname="Merry" time="0.046">
+  <properties/>
+  <testcase name="prioritize does not invent deadlines or overwrite priority" classname="com.geniex.assistant.domain.ScheduleEngineTest" time="0.002"/>
+  <testcase name="timetable turns blocked work into an unblock action" classname="com.geniex.assistant.domain.ScheduleEngineTest" time="0.04"/>
+  <testcase name="prioritize ranks overdue meaningful work ahead of undated work" classname="com.geniex.assistant.domain.ScheduleEngineTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

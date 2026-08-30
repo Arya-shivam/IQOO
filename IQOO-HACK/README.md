@@ -1,63 +1,43 @@
-# GenieX Assistant (Core MVP)
+# GenieX Assistant
 
-Android Kotlin app implementing the core personal-executive-assistant slice from the markdown spec:
+GenieX is a private, on-device personal-assistant MVP for Android. Its single-screen flow captures a meeting or voice update, extracts actions and commitments, persists them in Room, prioritizes open work, and returns a timetable plus a short PA-style recommendation.
 
-- Goal creation with deadline and intent
-- Auto task planning from goal
-- SQLite/Room persistent world model
-- Meeting transcript ingestion and structured extraction
-- Memory timeline (commitments/episodic/long-term)
-- Dynamic morning briefing and proactive nudges
-- Runtime settings with placeholder hooks for **GenieX + Qwen** local models
+## Current flow
 
-## What is implemented now
+1. Tap **Start meeting capture** or **Voice input**.
+2. Speak naturally about owners, deadlines, dependencies, and commitments.
+3. Stop capture. GenieX extracts structured work with the local Qwen GGUF model when available, with a deterministic fallback if inference fails.
+4. The app stores the transcript, actions, commitments, and assistant reply locally.
+5. The home screen shows **Priority timetable**, **My read**, and **What I heard**.
 
-### Core features
+The latest timetable and reply are restored after relaunch. Repeated analysis does not create duplicate open tasks or identical memories.
 
-1. **Goals + planning**
-   - Create goal with deadline.
-   - Planning engine generates milestone tasks.
+## Privacy and model location
 
-2. **Task execution loop**
-   - View tasks and mark complete.
-   - Morning briefing recalculates from current state.
-   - Proactive nudges detect overdue/blocked work.
+Room data, captured speech text, and inference stay in the app sandbox. Android speech recognition is requested in offline mode, but actual offline availability depends on the recognition service and installed language pack.
 
-3. **Meeting intelligence (MVP)**
-   - Meeting screen accepts transcript text.
-   - Extracts commitments and likely tasks.
-   - Writes extracted info to tasks + memory.
+The GGUF model must be at:
 
-4. **Persistent memory/state**
-   - Room tables: goals, tasks, meetings, memories, settings.
+```text
+/data/user/0/com.geniex.assistant/files/models/qwen/qwen.gguf
+```
 
-5. **Local model integration hooks**
-   - `LocalModelBridge` abstraction ready for runtime binding.
-   - `GenieXQwenLocalBridge` currently contains fallback logic + path-aware behavior.
+The app intentionally does not request broad shared-storage access. See [RUN_APP.md](RUN_APP.md) for model copy and launch commands.
 
-## Where to plug GenieX/Qwen later
+## Architecture
 
-- Configure model path in app `Settings` tab.
-- Default internal storage path is `/data/user/0/com.geniex.assistant/files/models`.
-- Drop or mount your model files under that path (or any custom path you set).
-- Replace fallback methods in:
-  - `app/src/main/java/com/geniex/assistant/llm/GenieXQwenLocalBridge.kt`
+- `audio` — Android speech-note capture
+- `data/db` — Room world model
+- `data/repo` — persistence boundary
+- `domain` — extraction coordination, importance, scheduling, briefings, nudges
+- `llm` — local Qwen bridge and rule-based fallback
+- `ui` — one-screen Compose experience and lifecycle state
 
-## Project structure
+## Verification
 
-- `app/src/main/java/com/geniex/assistant/data/db` → Room schema/DAO/database
-- `app/src/main/java/com/geniex/assistant/data/repo` → repository
-- `app/src/main/java/com/geniex/assistant/domain` → planning/briefing/proactive engines
-- `app/src/main/java/com/geniex/assistant/llm` → local model bridge + config
-- `app/src/main/java/com/geniex/assistant/ui` → viewmodel + compose app shell
-- `app/src/main/java/com/geniex/assistant/ui/screens` → dashboard/goals/tasks/meeting/settings
+```bash
+./gradlew assembleDebug
+./gradlew testDebugUnitTest lintDebug
+```
 
-## Build notes
-
-- Open in Android Studio (AGP 8.5+, Kotlin 1.9.24, JDK 17).
-- Sync Gradle and run on device/emulator.
-
-## Next recommended step
-
-- Replace transcript-only meeting input with microphone recording + local STT.
-- Then replace fallback extraction with actual GenieX/Qwen inference.
+The implemented scope is the vertical slice in `plans/AGENT_CONTEXT.md`. The root product brief contains long-term directions—not claims about current functionality.

@@ -12,4 +12,7 @@ interface MeetingDao {
 
     @Query("SELECT * FROM meetings ORDER BY createdAtEpochMs DESC")
     fun observeMeetings(): Flow<List<MeetingEntity>>
+
+    @Query("SELECT COUNT(*) FROM meetings")
+    suspend fun countMeetings(): Int
 }

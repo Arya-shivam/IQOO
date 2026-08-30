@@ -15,6 +15,9 @@ data class AssistantUiState(
     val modelPath: String = "",
     val runtimeName: String = "",
     val recommendation: String = "",
+    val timetable: List<String> = emptyList(),
+    val assistantSummary: String = "",
+    val modelError: String? = null,
     val loading: Boolean = false,
     val message: String? = null
 )

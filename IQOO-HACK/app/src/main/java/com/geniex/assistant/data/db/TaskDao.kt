@@ -25,4 +25,13 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE id = :taskId")
     suspend fun getTask(taskId: Long): TaskEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM tasks WHERE goalId = :goalId AND LOWER(title) = LOWER(:title) AND status != 'COMPLETED')")
+    suspend fun openTaskExists(goalId: Long, title: String): Boolean
+
+    @Query("SELECT * FROM tasks WHERE status != 'COMPLETED' ORDER BY priority DESC, COALESCE(deadlineEpochDay, 99999999) ASC")
+    suspend fun getOpenTasks(): List<TaskEntity>
+
+    @Query("SELECT COUNT(*) FROM tasks")
+    suspend fun countTasks(): Int
 }

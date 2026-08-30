@@ -53,6 +53,8 @@ data class MeetingEntity(
     val title: String,
     val transcript: String,
     val summary: String,
+    val audioPath: String?,
+    val assistantReply: String,
     val createdAtEpochMs: Long
 )
 

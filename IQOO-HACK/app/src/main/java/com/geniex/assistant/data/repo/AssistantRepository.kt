@@ -10,6 +10,8 @@ import com.geniex.assistant.model.GoalStatus
 import com.geniex.assistant.model.MemoryType
 import com.geniex.assistant.model.TaskStatus
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class AssistantRepository(private val db: AppDatabase) {
 
@@ -23,11 +25,23 @@ class AssistantRepository(private val db: AppDatabase) {
 
     suspend fun latestActiveGoalId(): Long? = db.goalDao().getLatestActiveGoalId()
 
+    suspend fun activeGoalIdByTitle(title: String): Long? =
+        db.goalDao().getActiveGoalIdByTitle(title)
+
     suspend fun insertGoalTasks(tasks: List<TaskEntity>) {
         db.taskDao().insertAll(tasks)
     }
 
     suspend fun createTask(task: TaskEntity): Long = db.taskDao().insert(task)
+
+    suspend fun openTaskExists(goalId: Long, title: String): Boolean =
+        db.taskDao().openTaskExists(goalId, title)
+
+    suspend fun updateTask(task: TaskEntity) {
+        db.taskDao().update(task)
+    }
+
+    suspend fun getOpenTasks(): List<TaskEntity> = db.taskDao().getOpenTasks()
 
     suspend fun markTaskDone(taskId: Long): Boolean {
         val task = db.taskDao().getTask(taskId) ?: return false
@@ -52,12 +66,20 @@ class AssistantRepository(private val db: AppDatabase) {
 
     suspend fun getSetting(key: String): String? = db.settingsDao().getByKey(key)?.value
 
-    suspend fun storeMeeting(title: String, transcript: String, summary: String): Long {
+    suspend fun storeMeeting(
+        title: String,
+        transcript: String,
+        summary: String,
+        audioPath: String? = null,
+        assistantReply: String = ""
+    ): Long {
         return db.meetingDao().insert(
             MeetingEntity(
                 title = title,
                 transcript = transcript,
                 summary = summary,
+                audioPath = audioPath,
+                assistantReply = assistantReply,
                 createdAtEpochMs = System.currentTimeMillis()
             )
         )
@@ -65,23 +87,29 @@ class AssistantRepository(private val db: AppDatabase) {
 
     suspend fun storeMemories(memories: List<Pair<MemoryType, String>>) {
         val now = System.currentTimeMillis()
-        val entities = memories.map { (type, content) ->
-            MemoryEntity(
-                type = type,
-                content = content,
-                importanceScore = when (type) {
-                    MemoryType.DECISION -> 9
-                    MemoryType.COMMITMENT -> 8
-                    MemoryType.LONG_TERM -> 7
-                    MemoryType.MEETING -> 6
-                    MemoryType.EPISODIC -> 5
-                },
-                relatedGoalId = null,
-                relatedTaskId = null,
-                createdAtEpochMs = now
-            )
-        }
-        db.memoryDao().insertAll(entities)
+        memories
+            .map { (type, content) -> type to content.trim() }
+            .filter { (_, content) -> content.isNotBlank() }
+            .distinct()
+            .forEach { (type, content) ->
+                if (db.memoryDao().memoryExists(type.name, content)) return@forEach
+                db.memoryDao().insert(
+                    MemoryEntity(
+                        type = type,
+                        content = content,
+                        importanceScore = when (type) {
+                            MemoryType.DECISION -> 9
+                            MemoryType.COMMITMENT -> 8
+                            MemoryType.LONG_TERM -> 7
+                            MemoryType.MEETING -> 6
+                            MemoryType.EPISODIC -> 5
+                        },
+                        relatedGoalId = null,
+                        relatedTaskId = null,
+                        createdAtEpochMs = now
+                    )
+                )
+            }
     }
 
     suspend fun completeGoalIfAllTasksDone(goalId: Long) {
@@ -94,6 +122,19 @@ class AssistantRepository(private val db: AppDatabase) {
                     updatedAtEpochMs = System.currentTimeMillis()
                 )
             )
+        }
+    }
+
+    suspend fun hasAnyData(): Boolean {
+        return db.goalDao().countGoals() > 0 ||
+            db.taskDao().countTasks() > 0 ||
+            db.meetingDao().countMeetings() > 0 ||
+            db.memoryDao().countMemories() > 0
+    }
+
+    suspend fun clearAllData() {
+        withContext(Dispatchers.IO) {
+            db.clearAllTables()
         }
     }
 }

@@ -9,22 +9,23 @@ class ImportanceScorer {
         val urgency = task.deadlineEpochDay?.let {
             val daysLeft = it - today.toEpochDay()
             when {
-                daysLeft <= 0 -> 5
-                daysLeft <= 1 -> 4
-                daysLeft <= 3 -> 3
-                daysLeft <= 7 -> 2
-                else -> 1
+                daysLeft < 0 -> 30
+                daysLeft == 0L -> 28
+                daysLeft == 1L -> 24
+                daysLeft <= 3 -> 18
+                daysLeft <= 7 -> 10
+                else -> 3
             }
-        } ?: 1
+        } ?: 0
 
-        val statusPenalty = when (task.status) {
-            TaskStatus.BLOCKED -> -1
-            TaskStatus.COMPLETED -> -5
-            TaskStatus.IN_PROGRESS -> 2
-            TaskStatus.PENDING -> 1
+        val statusWeight = when (task.status) {
+            TaskStatus.BLOCKED -> 12
+            TaskStatus.COMPLETED -> -100
+            TaskStatus.IN_PROGRESS -> 8
+            TaskStatus.PENDING -> 0
         }
 
-        val dependencyWeight = if (task.dependencyTaskId != null) 2 else 0
-        return (task.priority + urgency + statusPenalty + dependencyWeight).coerceIn(0, 10)
+        val explicitPriority = task.priority.coerceIn(0, 10) * 5
+        return (explicitPriority + urgency + statusWeight).coerceIn(0, 100)
     }
 }

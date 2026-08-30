@@ -11,10 +11,11 @@ class ProactiveEngine {
         tasks.filter { it.status != TaskStatus.COMPLETED }.forEach { task ->
             val deadline = task.deadlineEpochDay
             if (deadline != null && deadline < today.toEpochDay()) {
-                nudges += "${task.title} is overdue. Re-plan this now."
+                val daysOverdue = today.toEpochDay() - deadline
+                nudges += "I would not leave ${task.title} open any longer. It is overdue by $daysOverdue day(s), so either finish it now or deliberately move the plan."
             }
             if (task.status == TaskStatus.BLOCKED && !task.blockedReason.isNullOrBlank()) {
-                nudges += "${task.title} is blocked: ${task.blockedReason}."
+                nudges += "${task.title} is blocked because ${task.blockedReason}. I would clear that dependency before spending time on lower-impact work."
             }
         }
 

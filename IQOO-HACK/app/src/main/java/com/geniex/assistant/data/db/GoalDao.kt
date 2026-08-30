@@ -22,4 +22,10 @@ interface GoalDao {
 
     @Query("SELECT id FROM goals WHERE status = 'ACTIVE' ORDER BY updatedAtEpochMs DESC LIMIT 1")
     suspend fun getLatestActiveGoalId(): Long?
+
+    @Query("SELECT id FROM goals WHERE status = 'ACTIVE' AND LOWER(title) = LOWER(:title) LIMIT 1")
+    suspend fun getActiveGoalIdByTitle(title: String): Long?
+
+    @Query("SELECT COUNT(*) FROM goals")
+    suspend fun countGoals(): Int
 }
