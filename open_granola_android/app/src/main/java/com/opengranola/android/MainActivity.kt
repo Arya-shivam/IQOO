@@ -109,6 +109,9 @@ import com.opengranola.android.data.ChatMessageEntity
 import com.opengranola.android.data.CommitmentEntity
 import com.opengranola.android.data.DailyInsightEntity
 import com.opengranola.android.context.ContextPurpose
+import com.opengranola.android.domain.PriorityBriefing
+import com.opengranola.android.domain.PriorityEngine
+import com.opengranola.android.domain.PrioritySlot
 import com.opengranola.android.model.Meeting
 import com.opengranola.android.notification.NotificationReadService
 import com.opengranola.android.recording.RecordingService
@@ -191,6 +194,7 @@ class MainActivity : ComponentActivity() {
         var briefingState by remember { mutableStateOf("Connect intention with how today is unfolding") }
         var calendarSnapshot by remember { mutableStateOf(CalendarSnapshot()) }
         var calendarRefresh by remember { mutableIntStateOf(0) }
+        val priorityEngine = remember { PriorityEngine() }
         val transcriber = remember {
             LiveTranscriber(
                 this@MainActivity,
@@ -314,11 +318,21 @@ class MainActivity : ComponentActivity() {
                         usage = snapshot
                         viewModel.recordUsage(snapshot)
                     }
+                    val priorityBriefing = remember(planTasks, commitments, calendarSnapshot, usage, notificationsToday) {
+                        priorityEngine.build(
+                            planTasks = planTasks,
+                            commitments = commitments,
+                            calendar = calendarSnapshot,
+                            usage = usage,
+                            notificationsToday = notificationsToday
+                        )
+                    }
                     AssistantDashboard(
                         meetings = meetings,
                         userName = userName,
                         usage = usage,
                         calendarSnapshot = calendarSnapshot,
+                        priorityBriefing = priorityBriefing,
                         modelName = selectedModel,
                         modelState = modelState,
                         recentNotifications = recentNotifications,
@@ -535,6 +549,7 @@ private fun AssistantDashboard(
     userName: String,
     usage: UsageSnapshot,
     calendarSnapshot: CalendarSnapshot,
+    priorityBriefing: PriorityBriefing,
     modelName: String?,
     modelState: String,
     recentNotifications: List<NotificationEntity>,
@@ -699,6 +714,7 @@ private fun AssistantDashboard(
                     onGenerate = onGenerateBriefing,
                     onRate = onRateDailyInsight
                 )
+                PriorityTimetableCard(priorityBriefing)
                 CalendarSection(
                     snapshot = calendarSnapshot,
                     onPermission = onCalendarPermission,
@@ -1034,6 +1050,89 @@ private fun positiveMessage(userName: String, day: Int): String {
         "You have handled difficult days before. Today is yours too."
     )
     return messages[(day + userName.hashCode()).mod(messages.size)]
+}
+
+@androidx.compose.runtime.Composable
+private fun PriorityTimetableCard(briefing: PriorityBriefing) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = androidx.compose.material3.CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.TrackChanges,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Priority timetable", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        briefing.headline,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            if (briefing.timetable.isEmpty()) {
+                Text(
+                    "Create a plan or summarize a meeting to let pa rank what matters next.",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            } else {
+                briefing.timetable.forEach { slot -> PrioritySlotRow(slot) }
+            }
+            if (briefing.nudges.isNotEmpty()) {
+                Divider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .22f))
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("Proactive nudges", style = MaterialTheme.typography.labelMedium)
+                    briefing.nudges.forEach { nudge ->
+                        Text(
+                            "• $nudge",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun PrioritySlotRow(slot: PrioritySlot) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = .72f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    slot.window,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(slot.title, style = MaterialTheme.typography.titleSmall)
+                Text(slot.reason, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text(slot.source, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
 }
 
 @androidx.compose.runtime.Composable

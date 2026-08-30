@@ -58,4 +58,6 @@ dependencies {
 
     // Qualcomm GenieX local inference runtime for supported Snapdragon devices.
     implementation("com.qualcomm.qti:geniex-android:0.3.5")
+
+    testImplementation("junit:junit:4.13.2")
 }
