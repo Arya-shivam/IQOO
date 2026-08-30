@@ -82,15 +82,17 @@ class OpenRouterCoachClient(context: Context) {
         try {
             val body = JSONObject()
                 .put("model", model)
-                .put("max_tokens", maxTokens)
+                .put("max_tokens", maxOf(maxTokens, 2_048))
+                .put("reasoning", JSONObject().put("effort", "low").put("exclude", true))
                 .put("messages", JSONArray().apply { messages.forEach { put(JSONObject().put("role", it.role).put("content", it.content)) } })
             connection.outputStream.use { it.write(body.toString().toByteArray()) }
             val response = (if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (connection.responseCode !in 200..299) error("OpenRouter ${connection.responseCode}: ${JSONObject(response).optString("error", response).take(300)}")
-            JSONObject(response).getJSONArray("choices").getJSONObject(0).getJSONObject("message").getString("content").trim()
+            val choice = JSONObject(response).getJSONArray("choices").getJSONObject(0)
+            choice.getJSONObject("message").getString("content").trim()
                 .takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
-                ?: error("OpenRouter returned an empty response")
+                ?: error("OpenRouter returned no text (${choice.optString("finish_reason", "unknown")}). Try another model.")
         } finally {
             connection.disconnect()
         }
