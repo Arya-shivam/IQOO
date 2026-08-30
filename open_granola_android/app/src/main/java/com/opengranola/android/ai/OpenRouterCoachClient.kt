@@ -62,7 +62,8 @@ class OpenRouterCoachClient(context: Context) {
 
     suspend fun generateDailyBriefing(context: String): String = complete(listOf(FrontierMessage("user", """
         Create a concise daily briefing from the curated context below.
-        Write exactly three sections: Focus, Reality check, Next step.
+        Write exactly three one-line sections: Focus, Reality check, Next step. Maximum 75 words total.
+        No preamble, bullets, explanations, repetition, or extra sections.
         Be factual and do not invent deadlines or claim actions were completed.
         CURATED CONTEXT:
         $context
