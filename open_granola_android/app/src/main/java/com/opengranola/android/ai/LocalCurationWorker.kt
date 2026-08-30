@@ -76,7 +76,7 @@ class LocalCurationWorker(context: Context, params: WorkerParameters) : Coroutin
         fun schedule(context: Context) {
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 "local-context-curation",
-                ExistingPeriodicWorkPolicy.UPDATE,
+                ExistingPeriodicWorkPolicy.KEEP,
                 PeriodicWorkRequestBuilder<LocalCurationWorker>(15, TimeUnit.MINUTES).build()
             )
         }

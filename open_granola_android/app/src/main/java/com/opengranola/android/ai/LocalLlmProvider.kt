@@ -61,14 +61,11 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     private val modelStore = LocalModelStore(appContext)
     // The native wrapper is not re-entrant. This also prevents two meeting
     // summaries from interleaving tokens and corrupting each other's output.
-    private val inferenceLock = Mutex()
-    private var llm: LlmWrapper? = null
-    private var initialized: CompletableDeferred<Result<Unit>>? = null
-    private var managedModel: ManagedModel? = null
-
-    fun useManagedModel(model: ManagedModel) {
-        managedModel = model
+    suspend fun useManagedModel(model: ManagedModel) = inferenceLock.withLock {
+        if (managedModel == model) return@withLock
+        runCatching { llm?.close() }
         llm = null
+        managedModel = model
     }
 
     /** Warm the native runtime before the first user request. */
@@ -327,6 +324,12 @@ class GenieXLocalLlmProvider(context: Context) : LocalLlmProvider {
     }
 
     private companion object {
+        // GenieX owns large native allocations and is not re-entrant. One
+        // process-wide wrapper prevents UI and WorkManager from loading copies.
+        val inferenceLock = Mutex()
+        var llm: LlmWrapper? = null
+        var initialized: CompletableDeferred<Result<Unit>>? = null
+        var managedModel: ManagedModel? = null
         val THINK_BLOCK = Regex("<think>.*?</think>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
         val LEADING_THINK_CLOSE = Regex("^\\s*</think>\\s*", RegexOption.IGNORE_CASE)
         val SPECIAL_TOKEN = Regex("<\\|[^>]+\\|>|\\[/?INST\\]", RegexOption.IGNORE_CASE)
