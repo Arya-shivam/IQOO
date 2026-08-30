@@ -176,6 +176,13 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         assistantDao.saveEdges(prerequisiteEdges)
     }
 
+    suspend fun saveStandaloneGoal(title: String) {
+        val now = System.currentTimeMillis()
+        val id = "goal:${UUID.randomUUID()}"
+        assistantDao.saveGoal(GoalEntity(id, title.trim(), title.trim(), "active", now, now))
+        assistantDao.saveGraphNodes(listOf(GraphNodeEntity(id, "goal", title.trim(), title.trim(), "", "active", id, now, now)))
+    }
+
     fun toggleTask(task: PlanTaskEntity) {
         viewModelScope.launch { assistantDao.updateTaskAndGraphStatus(task.id, if (task.status == "done") "todo" else "done") }
     }

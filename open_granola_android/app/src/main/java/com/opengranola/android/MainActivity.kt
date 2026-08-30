@@ -145,6 +145,14 @@ private val DISPLAY_ROLE_PREFIX = Regex(
     "^\\s*(?:#{1,6}\\s*)?(?:assistant|model|system|user|pa)\\b(?:\\s*[:\\-]\\s*|\\s*\\n+|\\s+)",
     RegexOption.IGNORE_CASE
 )
+private val CHAT_WRITE_INTENT = Regex(
+    "^\\s*(?:please\\s+)?(?:add|create|set|make|build)\\s+(?:a\\s+|my\\s+)?(goal|plan)(?:\\s+(?:to|for))?\\s*[:\\-]?\\s+(.+)$",
+    RegexOption.IGNORE_CASE
+)
+
+private fun chatWriteIntent(message: String): Pair<String, String>? =
+    CHAT_WRITE_INTENT.matchEntire(message)?.destructured?.let { (type, objective) -> type.lowercase() to objective.trim() }
+        ?.takeIf { it.second.isNotBlank() }
 
 private fun sanitizeForDisplay(raw: String): String = raw
     .replace(DISPLAY_THINK_BLOCK, "")
@@ -421,7 +429,8 @@ class MainActivity : ComponentActivity() {
                         onClearDemo = viewModel::clearDemoData,
                         onRefreshUsage = { usageRefresh++ },
                         onSendChat = { message ->
-                            if (message.isNotBlank() && !frontierConfigured) {
+                            val writeIntent = chatWriteIntent(message)
+                            if (message.isNotBlank() && !frontierConfigured && writeIntent?.first != "goal") {
                                 chatState = "Connect OpenRouter in Frontier settings before chatting"
                                 frontierKeyDraft = ""
                                 frontierModelDraft = frontierModel
@@ -430,16 +439,26 @@ class MainActivity : ComponentActivity() {
                                 chatBusy = true
                                 streamingResponse = ""
                                 try {
-                                    chatState = "Retrieving local context…"
-                                    val contextAndHistory = withContext(Dispatchers.IO) {
-                                        val context = viewModel.buildContext("interactive chat", message.trim())
-                                        val history = chatMessages.takeLast(4).map { AssistantTurn(it.role, it.content) }
-                                        viewModel.saveChat("user", message.trim())
-                                        context to history
-                                    }
-                                    chatState = "Sending curated context to frontier…"
-                                    val response = withContext(Dispatchers.IO) {
-                                        frontier.chat(message.trim(), contextAndHistory.first.text, contextAndHistory.second)
+                                    viewModel.saveChat("user", message.trim())
+                                    val response = when (writeIntent?.first) {
+                                        "goal" -> {
+                                            viewModel.saveStandaloneGoal(writeIntent.second)
+                                            "Goal added: ${writeIntent.second}"
+                                        }
+                                        "plan" -> {
+                                            chatState = "Building your plan…"
+                                            val context = viewModel.buildContext("plan generation", writeIntent.second)
+                                            val generated = frontier.generatePlan(writeIntent.second, context.text)
+                                            viewModel.saveGeneratedPlan(generated)
+                                            "Plan created: ${generated.title}. You can review its tasks in Plans."
+                                        }
+                                        else -> {
+                                            chatState = "Retrieving local context…"
+                                            val context = viewModel.buildContext("interactive chat", message.trim())
+                                            val history = chatMessages.takeLast(4).map { AssistantTurn(it.role, it.content) }
+                                            chatState = "Sending curated context to frontier…"
+                                            frontier.chat(message.trim(), context.text, history)
+                                        }
                                     }
                                     viewModel.saveChat("assistant", response)
                                     lastInferenceStats = InferenceStats(0, 0, "frontier", 0.0, 0.0)
@@ -836,7 +855,7 @@ private fun AssistantDashboard(
                 OutlinedTextField(
                     value = chatDraft,
                     onValueChange = { chatDraft = it },
-                    placeholder = { Text("Ask pa about your meetings, plans or day…") },
+                    placeholder = { Text("Ask pa, add a goal, or create a plan…") },
                     minLines = 2,
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -864,6 +883,17 @@ private fun AssistantDashboard(
             } else if (tab == 2) {
                 Text("PLANS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 Text("Intent and follow-through", style = MaterialTheme.typography.headlineSmall)
+                val standaloneGoals = goals.filter { goal -> goal.status == "active" && plans.none { goal.id == "goal:${it.id}" } }
+                Text("Active goals", style = MaterialTheme.typography.titleLarge)
+                if (standaloneGoals.isEmpty()) Text("Tell Chat: “Add a goal to …”", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                standaloneGoals.forEach { goal ->
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(goal.title, style = MaterialTheme.typography.titleMedium)
+                            Text("Added from Chat", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
                         Text("Commitment ledger", style = MaterialTheme.typography.titleLarge)
