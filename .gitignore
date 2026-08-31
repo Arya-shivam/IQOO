@@ -1,0 +1,18 @@
+# Gradle and Android Studio generated state
+.gradle/
+.gradle-verification/
+**/.gradle/
+**/.idea/
+**/.kotlin/
+**/build/
+**/local.properties
+*.iml
+
+# Local Node/tooling output
+node_modules/
+package.json
+package-lock.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
