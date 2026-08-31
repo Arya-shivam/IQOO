@@ -69,6 +69,9 @@ interface AssistantDao {
     @Query("SELECT * FROM plan_tasks WHERE planId IN (:planIds) AND status != 'done' ORDER BY priority ASC, position ASC")
     suspend fun activeTasks(planIds: List<String>): List<PlanTaskEntity>
 
+    @Query("SELECT * FROM plan_tasks WHERE planId = :planId ORDER BY position ASC")
+    suspend fun tasksForPlan(planId: String): List<PlanTaskEntity>
+
     @Query("SELECT * FROM plan_tasks WHERE status = 'done' AND completedAt > 0 ORDER BY completedAt DESC LIMIT :limit")
     suspend fun recentCompletedTasks(limit: Int): List<PlanTaskEntity>
 
@@ -134,6 +137,14 @@ interface AssistantDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun saveEdges(edges: List<GraphEdgeEntity>)
+
+    @Transaction
+    suspend fun saveTaskToPlan(plan: PlanEntity, task: PlanTaskEntity, node: GraphNodeEntity, edge: GraphEdgeEntity) {
+        savePlan(plan)
+        saveTasks(listOf(task))
+        saveGraphNodes(listOf(node))
+        saveEdges(listOf(edge))
+    }
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun enqueue(item: CurationQueueEntity)

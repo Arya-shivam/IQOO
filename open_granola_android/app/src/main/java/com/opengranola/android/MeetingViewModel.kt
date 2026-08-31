@@ -43,6 +43,12 @@ data class TaskCompletionChallenge(
     val completedToday: Int
 )
 
+sealed class ChatTaskAddResult {
+    data class Added(val task: PlanTaskEntity, val plan: PlanEntity) : ChatTaskAddResult()
+    data class ChoosePlan(val plans: List<PlanEntity>) : ChatTaskAddResult()
+    data object NoPlans : ChatTaskAddResult()
+}
+
 class MeetingViewModel(application: Application) : AndroidViewModel(application) {
     private val database = OpenGranolaDatabase.get(application)
     private val dao = database.meetingDao()
@@ -199,6 +205,48 @@ class MeetingViewModel(application: Application) : AndroidViewModel(application)
         val id = "goal:${UUID.randomUUID()}"
         assistantDao.saveGoal(GoalEntity(id, title.trim(), title.trim(), "active", now, now))
         assistantDao.saveGraphNodes(listOf(GraphNodeEntity(id, "goal", title.trim(), title.trim(), "", "active", id, now, now)))
+    }
+
+    suspend fun addChatTask(title: String, planHint: String? = null): ChatTaskAddResult {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isBlank()) return ChatTaskAddResult.NoPlans
+
+        val activePlans = assistantDao.activePlans(100)
+        val matchingPlans = if (planHint.isNullOrBlank()) {
+            activePlans
+        } else {
+            val hint = planHint.trim()
+            val exact = activePlans.filter { it.title.equals(hint, ignoreCase = true) }
+            if (exact.isNotEmpty()) exact else activePlans.filter {
+                it.title.contains(hint, ignoreCase = true) || hint.contains(it.title, ignoreCase = true)
+            }
+        }
+        val plan = when {
+            matchingPlans.isEmpty() -> return if (activePlans.isEmpty()) ChatTaskAddResult.NoPlans else ChatTaskAddResult.ChoosePlan(emptyList())
+            matchingPlans.size > 1 -> return ChatTaskAddResult.ChoosePlan(matchingPlans.take(5))
+            else -> matchingPlans.single()
+        }
+
+        val now = System.currentTimeMillis()
+        val existingTasks = assistantDao.tasksForPlan(plan.id)
+        val task = PlanTaskEntity(
+            id = UUID.randomUUID().toString(),
+            planId = plan.id,
+            title = cleanTitle,
+            details = "Added from chat",
+            status = "todo",
+            priority = 2,
+            position = (existingTasks.maxOfOrNull { it.position } ?: -1) + 1,
+            estimatedMinutes = 15
+        )
+        val updatedPlan = plan.copy(updatedAt = now)
+        val node = GraphNodeEntity(task.id, "task", task.title, task.details, "", task.status, task.id, now, now)
+        val edge = GraphEdgeEntity(
+            UUID.randomUUID().toString(), "plan", plan.id, "task", task.id,
+            "contains", 1f, "Added from chat", now
+        )
+        assistantDao.saveTaskToPlan(updatedPlan, task, node, edge)
+        return ChatTaskAddResult.Added(task, updatedPlan)
     }
 
     fun toggleTask(task: PlanTaskEntity) {

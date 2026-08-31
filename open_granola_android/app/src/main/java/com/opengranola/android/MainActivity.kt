@@ -175,10 +175,24 @@ private val DISPLAY_ROLE_PREFIX = Regex(
     RegexOption.IGNORE_CASE
 )
 private val CHAT_MARKDOWN_PREFIX = Regex("(?m)^\\s*(?:#{1,6}|[-*]+)\\s*")
-private val CHAT_WRITE_INTENT = Regex(
-    "^\\s*(?:please\\s+)?(?:add|create|set|make|build)\\s+(?:a\\s+|my\\s+)?(goal|plan)(?:\\s+(?:to|for))?\\s*[:\\-]?\\s+(.+)$",
+private val CHAT_DIRECT_WRITE_INTENT = Regex(
+    "^\\s*(?:please\\s+)?(?:add|create|set|make|build)\\s+(?:a\\s+|an\\s+|my\\s+)?(goal|plan|task)\\b\\s*(?:(?:to|for|called|named)\\s+)?(.+?)\\s*$",
     RegexOption.IGNORE_CASE
 )
+private val CHAT_AS_WRITE_INTENT = Regex(
+    "^\\s*(?:please\\s+)?(?:add|create|set|make|build)\\s+(.+?)\\s+as\\s+(?:a\\s+|an\\s+)?(goal|plan|task)\\s*$",
+    RegexOption.IGNORE_CASE
+)
+private val CHAT_INTO_WRITE_INTENT = Regex(
+    "^\\s*(?:please\\s+)?(?:add|create|set|make|build)\\s+(.+?)\\s+(?:into|as)\\s+(?:a\\s+|an\\s+)?(goal|plan|task)\\s*$",
+    RegexOption.IGNORE_CASE
+)
+private val CHAT_TASK_PLAN_SUFFIX = Regex(
+    "^(.+?)\\s+(?:to|under|in|for)\\s+(?:the\\s+)?plan\\s+(.+)$",
+    RegexOption.IGNORE_CASE
+)
+
+private data class ChatWriteIntent(val type: String, val title: String, val planHint: String? = null)
 
 private enum class DashboardDestination(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Rounded.Home),
@@ -187,9 +201,32 @@ private enum class DashboardDestination(val label: String, val icon: ImageVector
     SETTINGS("Settings", Icons.Rounded.Settings)
 }
 
-private fun chatWriteIntent(message: String): Pair<String, String>? =
-    CHAT_WRITE_INTENT.matchEntire(message)?.destructured?.let { (type, objective) -> type.lowercase() to objective.trim() }
-        ?.takeIf { it.second.isNotBlank() }
+private fun chatWriteIntent(message: String): ChatWriteIntent? {
+    val direct = CHAT_DIRECT_WRITE_INTENT.matchEntire(message)
+    val asType = CHAT_AS_WRITE_INTENT.matchEntire(message)
+    val intoType = CHAT_INTO_WRITE_INTENT.matchEntire(message)
+    val type: String
+    var title: String
+    if (direct != null) {
+        type = direct.groupValues[1].lowercase()
+        title = direct.groupValues[2].trim()
+    } else if (asType != null) {
+        type = asType.groupValues[2].lowercase()
+        title = asType.groupValues[1].trim()
+    } else if (intoType != null) {
+        type = intoType.groupValues[2].lowercase()
+        title = intoType.groupValues[1].trim()
+    } else {
+        return null
+    }
+    if (title.isBlank()) return null
+    val taskTarget = if (type == "task") CHAT_TASK_PLAN_SUFFIX.matchEntire(title) else null
+    if (taskTarget != null) {
+        title = taskTarget.groupValues[1].trim()
+        return ChatWriteIntent(type, title, taskTarget.groupValues[2].trim().takeIf { it.isNotBlank() })
+    }
+    return ChatWriteIntent(type, title)
+}
 
 private fun sanitizeForDisplay(raw: String): String = raw
     .replace(DISPLAY_THINK_BLOCK, "")
@@ -633,7 +670,7 @@ class MainActivity : ComponentActivity() {
                         onRefreshUsage = { usageRefresh++ },
                         onSendChat = { message ->
                             val writeIntent = chatWriteIntent(message)
-                            if (message.isNotBlank() && !frontierConfigured && writeIntent?.first != "goal") {
+                            if (message.isNotBlank() && !frontierConfigured && writeIntent?.type !in setOf("goal", "task")) {
                                 chatState = "Connect OpenRouter in Frontier settings before chatting"
                                 frontierKeyDraft = ""
                                 frontierModelDraft = frontierModel
@@ -643,15 +680,15 @@ class MainActivity : ComponentActivity() {
                                 streamingResponse = ""
                                 try {
                                     viewModel.saveChat("user", message.trim())
-                                    val response = when (writeIntent?.first) {
+                                    val response = when (writeIntent?.type) {
                                         "goal" -> {
-                                            viewModel.saveStandaloneGoal(writeIntent.second)
-                                            "Goal added: ${writeIntent.second}"
+                                            viewModel.saveStandaloneGoal(writeIntent.title)
+                                            "Goal added: ${writeIntent.title}"
                                         }
                                         "plan" -> {
                                             chatState = "Building your plan…"
-                                            val context = viewModel.buildContext("plan generation", writeIntent.second)
-                                            val generated = frontier.generatePlan(writeIntent.second, context.text)
+                                            val context = viewModel.buildContext("plan generation", writeIntent.title)
+                                            val generated = frontier.generatePlan(writeIntent.title, context.text)
                                             viewModel.saveGeneratedPlan(generated)
                                             val blockers = generated.blockers.ifEmpty {
                                                 generated.tasks.mapNotNull { task ->
@@ -662,6 +699,17 @@ class MainActivity : ComponentActivity() {
                                             buildString {
                                                 append("Plan created: ${generated.title}. You can review its tasks in Plans.")
                                                 if (blockers.isNotEmpty()) append("\n\nManager note: ${blockers.joinToString(" ")}")
+                                            }
+                                            }
+                                        "task" -> {
+                                            when (val result = viewModel.addChatTask(writeIntent.title, writeIntent.planHint)) {
+                                                is ChatTaskAddResult.Added -> "Task added to ${result.plan.title}: ${result.task.title}"
+                                                is ChatTaskAddResult.NoPlans -> "I can add that task, but there is no active plan yet. Create a plan first."
+                                                is ChatTaskAddResult.ChoosePlan -> if (result.plans.isEmpty()) {
+                                                    "I couldn't find an active plan matching ‘${writeIntent.planHint}’. Tell me which plan should contain this task."
+                                                } else {
+                                                    "Which plan should contain ‘${writeIntent.title}’? Choose one: ${result.plans.joinToString { it.title }}"
+                                                }
                                             }
                                         }
                                         else -> {
@@ -931,7 +979,7 @@ private fun AssistantDashboard(
     val submitChat: () -> Unit = {
         val message = chatDraft.trim()
         if (message.isNotBlank() && !chatBusy) {
-            if (frontierConfigured || chatWriteIntent(message)?.first == "goal") chatDraft = ""
+            if (frontierConfigured || chatWriteIntent(message)?.type in setOf("goal", "task")) chatDraft = ""
             onSendChat(message)
             focusManager.clearFocus()
         }
